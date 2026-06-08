@@ -1,32 +1,29 @@
 use poise::serenity_prelude as serenity;
+use secrecy::ExposeSecret;
 
 use crate::commands::{age, verify};
 pub mod commands;
+mod config;
 mod logging;
 pub struct Data {} // User data, which is stored and accessible in all command invocations
 type Error = Box<dyn std::error::Error + Send + Sync>;
 type Context<'a> = poise::Context<'a, Data, Error>;
 #[tokio::main]
-async fn main() {
-    dotenvy::dotenv().ok();
+async fn main() -> anyhow::Result<()> {
     logging::init();
 
-    let token = std::env::var("DISCORD_TOKEN").expect("missing DISCORD_TOKEN");
+    let config = config::AppConfig::from_env()?;
     let intents = serenity::GatewayIntents::non_privileged();
+    let guild_id = config.discord.guild_id.map(serenity::GuildId::new);
 
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
             commands: vec![age::age(), verify::verify()],
             ..Default::default()
         })
-        .setup(|ctx, _ready, framework| {
+        .setup(move |ctx, _ready, framework| {
             Box::pin(async move {
-                if let Ok(guild_id) = std::env::var("DISCORD_GUILD_ID") {
-                    let guild_id = guild_id
-                        .parse::<u64>()
-                        .map(serenity::GuildId::new)
-                        .expect("DISCORD_GUILD_ID must be a Discord server ID");
-
+                if let Some(guild_id) = guild_id {
                     poise::builtins::register_in_guild(
                         ctx,
                         &framework.options().commands,
@@ -44,8 +41,11 @@ async fn main() {
         })
         .build();
 
-    let client = serenity::ClientBuilder::new(token, intents)
-        .framework(framework)
-        .await;
-    client.unwrap().start().await.unwrap();
+    let mut client =
+        serenity::ClientBuilder::new(config.discord.bot_token.expose_secret(), intents)
+            .framework(framework)
+            .await?;
+
+    client.start().await?;
+    Ok(())
 }
