@@ -18,7 +18,7 @@ async fn main() -> anyhow::Result<()> {
 
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
-            commands: vec![age::age(), verify::verify()],
+            commands: commands::all(),
             ..Default::default()
         })
         .setup(move |ctx, _ready, framework| {
