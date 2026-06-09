@@ -6,6 +6,7 @@ use secrecy::SecretString;
 pub struct DiscordConfig {
     pub bot_token: SecretString,
     pub guild_id: Option<u64>,
+    pub verified_role_id: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -25,6 +26,11 @@ impl AppConfig {
             Err(VarError::NotPresent) => None,
             Err(err) => return Err(err.into()),
         };
+        let verified_role_id = match std::env::var("VERIFIED_ROLE_ID") {
+            Ok(value) => Some(value.parse()?),
+            Err(VarError::NotPresent) => None,
+            Err(err) => return Err(err.into()),
+        };
 
         tracing::info!("Config loaded!");
 
@@ -32,6 +38,7 @@ impl AppConfig {
             discord: DiscordConfig {
                 bot_token,
                 guild_id,
+                verified_role_id,
             },
         })
     }

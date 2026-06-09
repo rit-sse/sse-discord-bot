@@ -1,11 +1,12 @@
 use poise::serenity_prelude as serenity;
 use secrecy::ExposeSecret;
 
-use crate::commands::{age, verify};
 pub mod commands;
 mod config;
 mod logging;
-pub struct Data {} // User data, which is stored and accessible in all command invocations
+pub struct Data {
+    config: config::AppConfig,
+} // User data, which is stored and accessible in all command invocations
 type Error = Box<dyn std::error::Error + Send + Sync>;
 type Context<'a> = poise::Context<'a, Data, Error>;
 #[tokio::main]
@@ -14,7 +15,9 @@ async fn main() -> anyhow::Result<()> {
 
     let config = config::AppConfig::from_env()?;
     let intents = serenity::GatewayIntents::non_privileged();
+    let bot_token = config.discord.bot_token.expose_secret().to_owned();
     let guild_id = config.discord.guild_id.map(serenity::GuildId::new);
+    let data_config = config.clone();
 
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
@@ -36,15 +39,16 @@ async fn main() -> anyhow::Result<()> {
                     tracing::info!("registered global slash commands");
                 }
 
-                Ok(Data {})
+                Ok(Data {
+                    config: data_config,
+                })
             })
         })
         .build();
 
-    let mut client =
-        serenity::ClientBuilder::new(config.discord.bot_token.expose_secret(), intents)
-            .framework(framework)
-            .await?;
+    let mut client = serenity::ClientBuilder::new(bot_token, intents)
+        .framework(framework)
+        .await?;
 
     client.start().await?;
     Ok(())
