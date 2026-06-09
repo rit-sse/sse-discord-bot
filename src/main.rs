@@ -1,11 +1,15 @@
 use poise::serenity_prelude as serenity;
 use secrecy::ExposeSecret;
+use std::{collections::HashMap, sync::Mutex};
+use verification::VerificationAttempt;
 
 pub mod commands;
 mod config;
 mod logging;
+pub mod verification;
 pub struct Data {
     config: config::AppConfig,
+    pending_verifications: Mutex<HashMap<u64, VerificationAttempt>>,
 } // User data, which is stored and accessible in all command invocations
 type Error = Box<dyn std::error::Error + Send + Sync>;
 type Context<'a> = poise::Context<'a, Data, Error>;
@@ -41,6 +45,7 @@ async fn main() -> anyhow::Result<()> {
 
                 Ok(Data {
                     config: data_config,
+                    pending_verifications: Mutex::new(HashMap::new()),
                 })
             })
         })
