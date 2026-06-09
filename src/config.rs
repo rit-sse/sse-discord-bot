@@ -10,8 +10,18 @@ pub struct DiscordConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct EmailConfig {
+    pub smtp_host: String,
+    pub smtp_port: u16,
+    pub smtp_username: SecretString,
+    pub smtp_password: SecretString,
+    pub from_address: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct AppConfig {
     pub discord: DiscordConfig,
+    pub email: EmailConfig,
 }
 
 impl AppConfig {
@@ -31,6 +41,21 @@ impl AppConfig {
             Err(VarError::NotPresent) => None,
             Err(err) => return Err(err.into()),
         };
+        let smtp_host =
+            std::env::var("SMTP_HOST").map_err(|_| anyhow::anyhow!("missing SMTP_HOST"))?;
+        let smtp_port = match std::env::var("SMTP_PORT") {
+            Ok(value) => value.parse()?,
+            Err(VarError::NotPresent) => 587,
+            Err(err) => return Err(err.into()),
+        };
+        let smtp_username = std::env::var("SMTP_USERNAME")
+            .map(SecretString::from)
+            .map_err(|_| anyhow::anyhow!("missing SMTP_USERNAME"))?;
+        let smtp_password = std::env::var("SMTP_PASSWORD")
+            .map(SecretString::from)
+            .map_err(|_| anyhow::anyhow!("missing SMTP_PASSWORD"))?;
+        let from_address = std::env::var("EMAIL_FROM_ADDRESS")
+            .map_err(|_| anyhow::anyhow!("missing EMAIL_FROM_ADDRESS"))?;
 
         tracing::info!("Config loaded!");
 
@@ -39,6 +64,13 @@ impl AppConfig {
                 bot_token,
                 guild_id,
                 verified_role_id,
+            },
+            email: EmailConfig {
+                smtp_host,
+                smtp_port,
+                smtp_username,
+                smtp_password,
+                from_address,
             },
         })
     }
