@@ -27,7 +27,7 @@ impl EmailSender {
         Ok(Self { config })
     }
 
-    pub async fn send_letter(&self, email: EmailAddress, code: VerificationCode) -> Result<()> {
+    pub async fn send_letter(&self, email: &EmailAddress, code: &VerificationCode) -> Result<()> {
         let from: Mailbox = self.config.from_address.parse()?;
         let to: Mailbox = email.to_string().parse()?;
 
