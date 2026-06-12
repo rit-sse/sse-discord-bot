@@ -4,8 +4,6 @@ The SSE Discord Bot is a Rust service for managing Discord-based onboarding, ver
 
 The bot is planned around `poise` and `serenity`. Poise provides the command framework for slash commands and typed command handlers, while Serenity provides lower-level Discord API access for guild events, roles, member state, and interactions. The service runs on Tokio, stores workflow state in Postgres, exposes a small Axum web API for health checks and external callbacks, and is intended to deploy as a Docker/containerized service.
 
-Shuttle is not required for this architecture. It can be useful for a quick hosted Rust prototype, but the core application should stay deployment-agnostic so it can run inside SSE-managed infrastructure later.
-
 ## Architecture
 
 ```mermaid
