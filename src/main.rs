@@ -1,8 +1,8 @@
 use email::EmailSender;
 use poise::serenity_prelude as serenity;
 use secrecy::ExposeSecret;
-use std::{collections::HashMap, sync::Mutex};
-use verification::VerificationAttempt;
+use std::sync::Mutex;
+use verification::VerificationStore;
 
 pub mod commands;
 mod config;
@@ -10,9 +10,9 @@ pub mod email;
 mod logging;
 pub mod verification;
 pub struct Data {
-    config: config::AppConfig,
+    pub config: config::AppConfig,
     pub email_sender: EmailSender,
-    pending_verifications: Mutex<HashMap<u64, VerificationAttempt>>,
+    pub verification_store: Mutex<VerificationStore>,
 } // User data, which is stored and accessible in all command invocations
 type Error = Box<dyn std::error::Error + Send + Sync>;
 type Context<'a> = poise::Context<'a, Data, Error>;
@@ -50,7 +50,7 @@ async fn main() -> anyhow::Result<()> {
                 Ok(Data {
                     config: data_config,
                     email_sender,
-                    pending_verifications: Mutex::new(HashMap::new()),
+                    verification_store: Mutex::new(VerificationStore::new()),
                 })
             })
         })

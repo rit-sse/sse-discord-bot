@@ -1,8 +1,9 @@
 use crate::{
     Data, Error,
-    verification::{EmailAddress, VerificationAttempt},
+    verification::{CheckCodeResult, EmailAddress, StartVerificationResult},
 };
 use poise::{CreateReply, serenity_prelude as serenity};
+use std::time::Duration;
 
 type ApplicationContext<'a> = poise::ApplicationContext<'a, Data, Error>;
 
@@ -23,6 +24,50 @@ async fn ephemeral_reply(
     ctx.send(CreateReply::default().content(content).ephemeral(true))
         .await?;
     Ok(())
+}
+
+async fn prompt_retry_modal(
+    ctx: ApplicationContext<'_>,
+    user_id: u64,
+    attempts_remaining: u8,
+) -> Result<Option<VerificationCodeModal>, Error> {
+    let custom_id = format!("verify_retry:{user_id}");
+    let components = vec![serenity::CreateActionRow::Buttons(vec![
+        serenity::CreateButton::new(&custom_id)
+            .label("Try again")
+            .style(serenity::ButtonStyle::Primary),
+    ])];
+
+    ctx.send(
+        CreateReply::default()
+            .content(format!(
+                "That verification code is incorrect. You have {attempts_remaining} attempts remaining."
+            ))
+            .components(components)
+            .ephemeral(true),
+    )
+    .await?;
+
+    let Some(interaction) = serenity::ComponentInteractionCollector::new(ctx.serenity_context())
+        .timeout(Duration::from_secs(60 * 60))
+        .filter(move |interaction| {
+            interaction.data.custom_id == custom_id && interaction.user.id.get() == user_id
+        })
+        .await
+    else {
+        tracing::info!(user_id, "verification retry button timed out");
+        return Ok(None);
+    };
+
+    let modal_data = poise::execute_modal_on_component_interaction::<VerificationCodeModal>(
+        ctx,
+        interaction,
+        None,
+        Some(Duration::from_secs(60 * 60)),
+    )
+    .await?;
+
+    Ok(modal_data)
 }
 
 /// Starts email verification by generating a one-time code.
@@ -59,64 +104,118 @@ pub async fn verify(ctx: ApplicationContext<'_>, email: String) -> std::result::
         return Ok(());
     }
 
-    let attempt = VerificationAttempt::new(user.id.get(), email);
-
-    ctx.data()
-        .email_sender
-        .send_letter(attempt.email(), attempt.code())
-        .await?;
-
-    // Temporary local testing hook: remove the code field once email sending is wired in.
-    tracing::info!(
-        user_id = attempt.user_id(),
-        guild_id = %guild_id,
-        role_id = %role_id,
-        email = %attempt.email(),
-        verification_code = %attempt.code(),
-        "created verification code"
-    );
-
-    {
-        let mut pending_verifications = ctx
+    let user_id = user.id.get();
+    let start_result = {
+        let mut verification_store = ctx
             .data()
-            .pending_verifications
+            .verification_store
             .lock()
-            .map_err(|err| format!("pending verification store lock poisoned: {err}"))?;
-        pending_verifications.insert(attempt.user_id(), attempt);
+            .map_err(|err| format!("verification store lock poisoned: {err}"))?;
+
+        verification_store.start_or_reuse(user_id, email)
+    };
+
+    let (attempt, should_send_email) = match start_result {
+        StartVerificationResult::Created(attempt) => (attempt, true),
+        StartVerificationResult::Reused(attempt) => {
+            tracing::info!(
+                user_id = %user.id,
+                guild_id = %guild_id,
+                email = %attempt.email(),
+                "reusing pending verification attempt"
+            );
+            (attempt, false)
+        }
+    };
+
+    if should_send_email {
+        ctx.data()
+            .email_sender
+            .send_verification_code(attempt.email(), attempt.code())
+            .await?;
+
+        tracing::info!(
+            user_id = attempt.user_id(),
+            guild_id = %guild_id,
+            role_id = %role_id,
+            email = %attempt.email(),
+            "created verification attempt and sent verification email"
+        );
     }
 
     let Some(modal_data) = ({
-        use poise::Modal as _;
-        VerificationCodeModal::execute(ctx).await?
+        poise::execute_modal::<_, _, VerificationCodeModal>(
+            ctx,
+            None,
+            Some(Duration::from_secs(60 * 60)),
+        )
+        .await?
     }) else {
         tracing::info!(user_id = %user.id, guild_id = %guild_id, "verification modal timed out or was dismissed");
         return Ok(());
     };
 
-    let Some(attempt) = ctx
-        .data()
-        .pending_verifications
-        .lock()
-        .map_err(|err| format!("pending verification store lock poisoned: {err}"))?
-        .remove(&user.id.get())
-    else {
-        ephemeral_reply(
-            ctx,
-            "I could not find a pending verification attempt. Please run `/verify` again.",
-        )
-        .await?;
-        return Ok(());
-    };
+    let mut submitted_code = modal_data.code;
+    let attempt = loop {
+        let verification_result = {
+            let mut verification_store = ctx
+                .data()
+                .verification_store
+                .lock()
+                .map_err(|err| format!("verification store lock poisoned: {err}"))?;
 
-    if !attempt.code().matches(&modal_data.code) {
-        tracing::info!(user_id = %user.id, guild_id = %guild_id, "submitted incorrect verification code");
-        ephemeral_reply(
-            ctx,
-            "That verification code is incorrect. Please run `/verify` again.",
-        )
-        .await?;
-        return Ok(());
-    }
+            verification_store.check_code(user_id, &submitted_code)
+        };
+
+        match verification_result {
+            CheckCodeResult::Accepted(attempt) => break attempt,
+            CheckCodeResult::Missing => {
+                ephemeral_reply(
+                    ctx,
+                    "I could not find a pending verification attempt. Please run `/verify` again.",
+                )
+                .await?;
+                return Ok(());
+            }
+            CheckCodeResult::Expired => {
+                tracing::info!(user_id = %user.id, guild_id = %guild_id, "verification attempt expired");
+                ephemeral_reply(
+                    ctx,
+                    "That verification code expired. Please run `/verify` again.",
+                )
+                .await?;
+                return Ok(());
+            }
+            CheckCodeResult::Incorrect {
+                attempts_remaining,
+                has_attempts_remaining,
+            } => {
+                tracing::info!(
+                    user_id = %user.id,
+                    guild_id = %guild_id,
+                    attempts_remaining,
+                    "submitted incorrect verification code"
+                );
+
+                if has_attempts_remaining {
+                    let Some(modal_data) =
+                        prompt_retry_modal(ctx, user_id, attempts_remaining).await?
+                    else {
+                        return Ok(());
+                    };
+
+                    submitted_code = modal_data.code;
+                } else {
+                    ephemeral_reply(
+                        ctx,
+                        "That verification code is incorrect, and you have no attempts remaining. Please run `/verify` again to request a new code.",
+                    )
+                    .await?;
+                    return Ok(());
+                }
+            }
+        }
+    };
 
     let member = guild_id.member(ctx.serenity_context(), user.id).await?;
     member.add_role(ctx.serenity_context(), role_id).await?;
