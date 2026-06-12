@@ -61,6 +61,11 @@ pub async fn verify(ctx: ApplicationContext<'_>, email: String) -> std::result::
 
     let attempt = VerificationAttempt::new(user.id.get(), email);
 
+    ctx.data()
+        .email_sender
+        .send_letter(attempt.email(), attempt.code())
+        .await?;
+
     // Temporary local testing hook: remove the code field once email sending is wired in.
     tracing::info!(
         user_id = attempt.user_id(),

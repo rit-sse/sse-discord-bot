@@ -2,7 +2,7 @@ use crate::{
     config::EmailConfig,
     verification::{EmailAddress, VerificationCode},
 };
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use lettre::{
     AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor,
     message::{Mailbox, header::ContentType},
@@ -28,27 +28,63 @@ impl EmailSender {
     }
 
     pub async fn send_letter(&self, email: &EmailAddress, code: &VerificationCode) -> Result<()> {
-        let from: Mailbox = self.config.from_address.parse()?;
-        let to: Mailbox = email.to_string().parse()?;
+        let from: Mailbox = self
+            .config
+            .from_address
+            .parse()
+            .context("failed to parse EMAIL_FROM_ADDRESS as an email mailbox")?;
+        let to: Mailbox = email
+            .to_string()
+            .parse()
+            .context("failed to parse verification recipient email as an email mailbox")?;
 
         let message = Message::builder()
-            .from(from)
-            .to(to)
+            .from(from.clone())
+            .to(to.clone())
             .subject("Your SSE Discord verification code")
             .header(ContentType::TEXT_PLAIN)
-            .body(format!("Your verification code is: {code}"))?;
+            .body(format!("Your verification code is: {code}"))
+            .context("failed to build verification email message")?;
 
         let credentials = Credentials::new(
             self.config.smtp_username.expose_secret().to_owned(),
             self.config.smtp_password.expose_secret().to_owned(),
         );
 
-        let mailer = AsyncSmtpTransport::<Tokio1Executor>::relay(&self.config.smtp_host)?
-            .port(self.config.smtp_port)
-            .credentials(credentials)
-            .build();
+        let mailer = if self.config.smtp_starttls {
+            AsyncSmtpTransport::<Tokio1Executor>::starttls_relay(&self.config.smtp_host)?
+                .port(self.config.smtp_port)
+                .credentials(credentials)
+                .build()
+        } else {
+            AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&self.config.smtp_host)
+                .port(self.config.smtp_port)
+                .credentials(credentials)
+                .build()
+        };
 
-        mailer.send(message).await?;
+        tracing::info!(
+            smtp_host = %self.config.smtp_host,
+            smtp_port = self.config.smtp_port,
+            smtp_starttls = self.config.smtp_starttls,
+            from = %from,
+            to = %to,
+            "sending verification email"
+        );
+
+        mailer
+            .send(message)
+            .await
+            .context("failed to send verification email through SMTP")?;
+
+        tracing::info!(
+            smtp_host = %self.config.smtp_host,
+            smtp_port = self.config.smtp_port,
+            smtp_starttls = self.config.smtp_starttls,
+            to = %to,
+            "sent verification email"
+        );
+
         Ok(())
     }
 }

@@ -13,6 +13,7 @@ pub struct DiscordConfig {
 pub struct EmailConfig {
     pub smtp_host: String,
     pub smtp_port: u16,
+    pub smtp_starttls: bool,
     pub smtp_username: SecretString,
     pub smtp_password: SecretString,
     pub from_address: String,
@@ -48,6 +49,11 @@ impl AppConfig {
             Err(VarError::NotPresent) => 587,
             Err(err) => return Err(err.into()),
         };
+        let smtp_starttls = match std::env::var("SMTP_STARTTLS") {
+            Ok(value) => value.parse()?,
+            Err(VarError::NotPresent) => true,
+            Err(err) => return Err(err.into()),
+        };
         let smtp_username = std::env::var("SMTP_USERNAME")
             .map(SecretString::from)
             .map_err(|_| anyhow::anyhow!("missing SMTP_USERNAME"))?;
@@ -68,6 +74,7 @@ impl AppConfig {
             email: EmailConfig {
                 smtp_host,
                 smtp_port,
+                smtp_starttls,
                 smtp_username,
                 smtp_password,
                 from_address,
