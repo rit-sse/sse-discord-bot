@@ -1,6 +1,10 @@
 use anyhow::{Result, anyhow};
 use rand::RngExt;
 use std::fmt;
+use std::time::{Duration, Instant};
+
+const VERIFICATION_CODE_TTL: Duration = Duration::from_secs(60 * 60);
+const MAX_FAILED_ATTEMPTS: u8 = 5;
 
 #[derive(Debug, Clone)]
 pub struct VerificationCode {
@@ -12,6 +16,8 @@ pub struct VerificationAttempt {
     user_id: u64,
     email: EmailAddress,
     code: VerificationCode,
+    expires_at: Instant,
+    failed_attempts: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -68,6 +74,8 @@ impl VerificationAttempt {
             user_id,
             email,
             code: VerificationCode::generate(),
+            expires_at: Instant::now() + VERIFICATION_CODE_TTL,
+            failed_attempts: 0,
         }
     }
 
@@ -81,5 +89,25 @@ impl VerificationAttempt {
 
     pub fn code(&self) -> &VerificationCode {
         &self.code
+    }
+
+    pub fn is_expired(&self) -> bool {
+        Instant::now() >= self.expires_at
+    }
+
+    pub fn code_matches(&self, submitted_code: &str) -> bool {
+        self.code.matches(submitted_code)
+    }
+
+    pub fn register_failed_attempt(&mut self) {
+        self.failed_attempts = self.failed_attempts.saturating_add(1);
+    }
+
+    pub fn attempts_remaining(&self) -> u8 {
+        MAX_FAILED_ATTEMPTS.saturating_sub(self.failed_attempts)
+    }
+
+    pub fn has_attempts_remaining(&self) -> bool {
+        self.failed_attempts < MAX_FAILED_ATTEMPTS
     }
 }
