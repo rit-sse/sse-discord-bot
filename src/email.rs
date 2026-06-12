@@ -27,7 +27,11 @@ impl EmailSender {
         Ok(Self { config })
     }
 
-    pub async fn send_letter(&self, email: &EmailAddress, code: &VerificationCode) -> Result<()> {
+    pub async fn send_verification_code(
+        &self,
+        email: &EmailAddress,
+        code: &VerificationCode,
+    ) -> Result<()> {
         let from: Mailbox = self
             .config
             .from_address
@@ -43,7 +47,12 @@ impl EmailSender {
             .to(to.clone())
             .subject("Your SSE Discord verification code")
             .header(ContentType::TEXT_PLAIN)
-            .body(format!("Your verification code is: {code}"))
+            .body(format!(
+                "Your SSE Discord verification code is: {code}\n\n\
+                This code expires in 1 hour.\n\n\
+                Enter this code in the Discord verification prompt to finish verifying your account.\n\n\
+                If you did not request this code, you can ignore this email."
+            ))
             .context("failed to build verification email message")?;
 
         let credentials = Credentials::new(
