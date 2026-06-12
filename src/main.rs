@@ -1,3 +1,4 @@
+use email::EmailSender;
 use poise::serenity_prelude as serenity;
 use secrecy::ExposeSecret;
 use std::{collections::HashMap, sync::Mutex};
@@ -5,10 +6,12 @@ use verification::VerificationAttempt;
 
 pub mod commands;
 mod config;
+pub mod email;
 mod logging;
 pub mod verification;
 pub struct Data {
     config: config::AppConfig,
+    pub email_sender: EmailSender,
     pending_verifications: Mutex<HashMap<u64, VerificationAttempt>>,
 } // User data, which is stored and accessible in all command invocations
 type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -21,6 +24,7 @@ async fn main() -> anyhow::Result<()> {
     let intents = serenity::GatewayIntents::non_privileged();
     let bot_token = config.discord.bot_token.expose_secret().to_owned();
     let guild_id = config.discord.guild_id.map(serenity::GuildId::new);
+    let email_sender = EmailSender::new(config.email.clone())?;
     let data_config = config.clone();
 
     let framework = poise::Framework::builder()
@@ -45,6 +49,7 @@ async fn main() -> anyhow::Result<()> {
 
                 Ok(Data {
                     config: data_config,
+                    email_sender,
                     pending_verifications: Mutex::new(HashMap::new()),
                 })
             })
