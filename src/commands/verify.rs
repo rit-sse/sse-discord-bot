@@ -99,9 +99,27 @@ pub async fn verify(ctx: ApplicationContext<'_>, email: String) -> std::result::
         .has_role(ctx.serenity_context(), guild_id, role_id)
         .await?
     {
-        tracing::info!(user_id = %user.id, guild_id = %guild_id, "user is already verified");
-        ephemeral_reply(ctx, "You are already verified.").await?;
-        return Ok(());
+        let has_recorded_identity = {
+            let verified_identities = ctx
+                .data()
+                .verified_identities
+                .lock()
+                .map_err(|err| format!("verified identity store lock poisoned: {err}"))?;
+
+            verified_identities.get(user.id.get()).is_some()
+        };
+
+        if has_recorded_identity {
+            tracing::info!(user_id = %user.id, guild_id = %guild_id, "user is already verified");
+            ephemeral_reply(ctx, "You are already verified.").await?;
+            return Ok(());
+        }
+
+        tracing::info!(
+            user_id = %user.id,
+            guild_id = %guild_id,
+            "user has verified role but no recorded verified identity; refreshing verification"
+        );
     }
 
     let user_id = user.id.get();
@@ -219,6 +237,15 @@ pub async fn verify(ctx: ApplicationContext<'_>, email: String) -> std::result::
 
     let member = guild_id.member(ctx.serenity_context(), user.id).await?;
     member.add_role(ctx.serenity_context(), role_id).await?;
+    {
+        let mut verified_identities = ctx
+            .data()
+            .verified_identities
+            .lock()
+            .map_err(|err| format!("verified identity store lock poisoned: {err}"))?;
+
+        verified_identities.record_verified(user_id, attempt.email().clone());
+    }
 
     tracing::info!(
         user_id = %user.id,

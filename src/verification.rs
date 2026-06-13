@@ -2,7 +2,7 @@ use anyhow::{Result, anyhow};
 use rand::RngExt;
 use std::collections::HashMap;
 use std::fmt;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 const VERIFICATION_CODE_TTL: Duration = Duration::from_secs(60 * 60);
 const MAX_FAILED_ATTEMPTS: u8 = 5;
@@ -44,6 +44,18 @@ pub struct VerificationStore {
 }
 
 #[derive(Debug, Clone)]
+pub struct VerifiedIdentity {
+    user_id: u64,
+    email: EmailAddress,
+    verified_at: SystemTime,
+}
+
+#[derive(Debug, Default)]
+pub struct VerifiedIdentityStore {
+    verified_identities: HashMap<u64, VerifiedIdentity>,
+}
+
+#[derive(Debug, Clone)]
 pub struct EmailAddress {
     user: String,
     domain: String,
@@ -63,6 +75,49 @@ impl EmailAddress {
             user: String::from(user),
             domain: String::from(domain),
         })
+    }
+}
+
+impl VerifiedIdentity {
+    pub fn new(user_id: u64, email: EmailAddress) -> Self {
+        Self {
+            user_id,
+            email,
+            verified_at: SystemTime::now(),
+        }
+    }
+
+    pub fn user_id(&self) -> u64 {
+        self.user_id
+    }
+
+    pub fn email(&self) -> &EmailAddress {
+        &self.email
+    }
+
+    pub fn verified_at(&self) -> SystemTime {
+        self.verified_at
+    }
+}
+
+impl VerifiedIdentityStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn record_verified(&mut self, user_id: u64, email: EmailAddress) -> VerifiedIdentity {
+        let identity = VerifiedIdentity::new(user_id, email);
+        self.verified_identities.insert(user_id, identity.clone());
+        identity
+    }
+
+    pub fn get(&self, user_id: u64) -> Option<&VerifiedIdentity> {
+        self.verified_identities.get(&user_id)
+    }
+
+    #[cfg(test)]
+    fn has_verified_identity(&self, user_id: u64) -> bool {
+        self.verified_identities.contains_key(&user_id)
     }
 }
 
@@ -265,6 +320,17 @@ mod tests {
         assert!(EmailAddress::parse("not-an-email").is_err());
         assert!(EmailAddress::parse("@example.com").is_err());
         assert!(EmailAddress::parse("test@").is_err());
+    }
+
+    #[test]
+    fn records_verified_identity() {
+        let mut store = VerifiedIdentityStore::new();
+
+        let identity = store.record_verified(1, email());
+
+        assert_eq!(identity.user_id(), 1);
+        assert_eq!(identity.email().to_string(), "test@example.com");
+        assert!(store.has_verified_identity(1));
     }
 
     #[test]
