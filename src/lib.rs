@@ -1,5 +1,6 @@
 pub mod commands;
 pub mod config;
+pub mod db;
 pub mod domain;
 pub mod integrations;
 pub mod logging;
@@ -7,6 +8,7 @@ pub mod logging;
 use integrations::{authentik::AuthentikClient, email::EmailSender};
 use poise::serenity_prelude as serenity;
 use secrecy::ExposeSecret;
+use sqlx::PgPool;
 use std::sync::Mutex;
 
 use config::AppConfig;
@@ -22,14 +24,19 @@ pub struct Data {
     pub verified_identities: Mutex<VerifiedIdentityStore>,
     pub onboarding_store: Mutex<OnboardingStore>,
     pub authentik_client: AuthentikClient,
+    pub db: PgPool,
 }
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Context<'a> = poise::Context<'a, Data, Error>;
 
-pub fn data_from_config(config: AppConfig) -> anyhow::Result<Data> {
+pub async fn data_from_config(config: AppConfig) -> anyhow::Result<Data> {
+    tracing::debug!("initializing application dependencies");
+    let db = db::connect(&config.db).await?;
     let email_sender = EmailSender::new(config.email.clone())?;
     let authentik_client = AuthentikClient::new(config.authentik.clone())?;
+
+    tracing::debug!("application dependencies initialized");
 
     Ok(Data {
         config,
@@ -38,6 +45,7 @@ pub fn data_from_config(config: AppConfig) -> anyhow::Result<Data> {
         verified_identities: Mutex::new(VerifiedIdentityStore::new()),
         onboarding_store: Mutex::new(OnboardingStore::new()),
         authentik_client,
+        db,
     })
 }
 

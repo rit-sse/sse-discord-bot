@@ -11,12 +11,12 @@ async fn main() -> anyhow::Result<()> {
     let intents = serenity::GatewayIntents::non_privileged();
     let bot_token = sse_discord_bot::bot_token(&config);
     let guild_id = guild_id(&config);
-    let data = data_from_config(config.clone())?;
+    let data = data_from_config(config.clone()).await?;
     let data_config = config.clone();
     tracing::info!(
         guild_id = ?guild_id,
         onboarding_target_count = config.onboarding.targets.len(),
-        "starting discord bot"
+        "starting discord bot..."
     );
 
     let framework = poise::Framework::builder()
@@ -57,7 +57,7 @@ async fn main() -> anyhow::Result<()> {
         .framework(framework)
         .await?;
 
-    tracing::info!("discord client built; connecting to gateway");
+    tracing::info!("discord client built; connecting to gateway...");
     client.start().await?;
     Ok(())
 }
