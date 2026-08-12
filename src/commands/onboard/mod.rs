@@ -1,7 +1,7 @@
 use crate::{
     Data, Error,
     config::OnboardingTargetConfig,
-    onboarding::{
+    domain::onboarding::{
         ApproveOnboardingResult, DenyOnboardingResult, OnboardingRequest, OnboardingRequestId,
         StartOnboardingResult,
     },
@@ -525,11 +525,11 @@ async fn update_review_message(
 
 fn review_message_content(request: &OnboardingRequest, fallback_status: &str) -> String {
     let status = match request.status() {
-        crate::onboarding::OnboardingStatus::Pending => "Pending officer review".to_owned(),
-        crate::onboarding::OnboardingStatus::Denied { approver_id } => {
+        crate::domain::onboarding::OnboardingStatus::Pending => "Pending officer review".to_owned(),
+        crate::domain::onboarding::OnboardingStatus::Denied { approver_id } => {
             format!("Denied by <@{approver_id}>")
         }
-        crate::onboarding::OnboardingStatus::Approved { approver_id } => {
+        crate::domain::onboarding::OnboardingStatus::Approved { approver_id } => {
             format!("Approved by <@{approver_id}>")
         }
     };

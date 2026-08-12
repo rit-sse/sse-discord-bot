@@ -1,39 +1,17 @@
-use authentik::AuthentikClient;
-use email::EmailSender;
-use onboarding::OnboardingStore;
 use poise::serenity_prelude as serenity;
-use secrecy::ExposeSecret;
-use std::{collections::HashSet, sync::Mutex};
-use verification::{VerificationStore, VerifiedIdentityStore};
+use sse_discord_bot::{Error, commands, config::AppConfig, data_from_config, guild_id, logging};
+use std::collections::HashSet;
 
-pub mod authentik;
-pub mod commands;
-mod config;
-pub mod email;
-mod logging;
-pub mod onboarding;
-pub mod verification;
-pub struct Data {
-    pub config: config::AppConfig,
-    pub email_sender: EmailSender,
-    pub verification_store: Mutex<VerificationStore>,
-    pub verified_identities: Mutex<VerifiedIdentityStore>,
-    pub onboarding_store: Mutex<OnboardingStore>,
-    pub authentik_client: AuthentikClient,
-} // User data, which is stored and accessible in all command invocations
-type Error = Box<dyn std::error::Error + Send + Sync>;
-type Context<'a> = poise::Context<'a, Data, Error>;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     logging::load_dotenv()?;
     logging::init();
 
-    let config = config::AppConfig::from_env()?;
+    let config = AppConfig::from_env()?;
     let intents = serenity::GatewayIntents::non_privileged();
-    let bot_token = config.discord.bot_token.expose_secret().to_owned();
-    let guild_id = config.discord.guild_id.map(serenity::GuildId::new);
-    let email_sender = EmailSender::new(config.email.clone())?;
-    let authentik_client = AuthentikClient::new(config.authentik.clone())?;
+    let bot_token = sse_discord_bot::bot_token(&config);
+    let guild_id = guild_id(&config);
+    let data = data_from_config(config.clone())?;
     let data_config = config.clone();
     tracing::info!(
         guild_id = ?guild_id,
@@ -70,14 +48,7 @@ async fn main() -> anyhow::Result<()> {
                     );
                 }
 
-                Ok(Data {
-                    config: data_config,
-                    email_sender,
-                    verification_store: Mutex::new(VerificationStore::new()),
-                    verified_identities: Mutex::new(VerifiedIdentityStore::new()),
-                    onboarding_store: Mutex::new(OnboardingStore::new()),
-                    authentik_client,
-                })
+                Ok(data)
             })
         })
         .build();
@@ -95,7 +66,7 @@ async fn configure_onboard_command_permissions(
     ctx: &serenity::Context,
     guild_id: serenity::GuildId,
     registered_commands: &[serenity::Command],
-    config: &config::AppConfig,
+    config: &AppConfig,
 ) -> Result<(), Error> {
     let Some(onboard_command) = registered_commands
         .iter()

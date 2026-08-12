@@ -1,4 +1,4 @@
-use crate::{config::AuthentikConfig, verification::EmailAddress};
+use crate::{config::AuthentikConfig, domain::verification::EmailAddress};
 use anyhow::{Context, Result, anyhow};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};

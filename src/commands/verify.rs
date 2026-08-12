@@ -1,6 +1,6 @@
 use crate::{
     Data, Error,
-    verification::{CheckCodeResult, EmailAddress, StartVerificationResult},
+    domain::verification::{CheckCodeResult, EmailAddress, StartVerificationResult},
 };
 use poise::{CreateReply, serenity_prelude as serenity};
 use std::time::Duration;

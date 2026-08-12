@@ -1,6 +1,6 @@
 use crate::{
     config::EmailConfig,
-    verification::{EmailAddress, VerificationCode},
+    domain::verification::{EmailAddress, VerificationCode},
 };
 use anyhow::{Context, Result, anyhow};
 use lettre::{

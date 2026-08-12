@@ -1,4 +1,4 @@
-use crate::verification::EmailAddress;
+use crate::domain::verification::EmailAddress;
 use rand::RngExt;
 use std::{collections::HashMap, time::SystemTime};
 
