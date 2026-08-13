@@ -2,7 +2,9 @@
 
 The SSE Discord Bot is a Rust service for managing Discord-based onboarding, verification, and infrastructure access workflows for the SSE community. Discord is the primary user interface, but it should not become the source of truth for membership, verification, or infrastructure permissions. The bot coordinates user-facing Discord interactions with persisted workflow state and auditable integrations with SSE infrastructure systems.
 
-The bot is planned around `poise` and `serenity`. Poise provides the command framework for slash commands and typed command handlers, while Serenity provides lower-level Discord API access for guild events, roles, member state, and interactions. The service runs on Tokio, stores workflow state in Postgres, exposes a small Axum web API for health checks and external callbacks, and is intended to deploy as a Docker/containerized service.
+See [ROADMAP.md](ROADMAP.md) for the current implementation status, release milestones, and definition of done.
+
+The bot is built around `poise` and `serenity`. Poise provides the command framework for slash commands and typed command handlers, while Serenity provides lower-level Discord API access for guild events, roles, member state, and interactions. The service runs on Tokio, is incrementally moving workflow state into Postgres, and is planned to expose a small Axum web API for health checks and external callbacks before being deployed as a containerized service.
 
 ## Architecture
 
