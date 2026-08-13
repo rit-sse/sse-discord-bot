@@ -12,7 +12,7 @@ async fn main() -> anyhow::Result<()> {
     let bot_token = sse_discord_bot::bot_token(&config);
     let guild_id = guild_id(&config);
     let data = data_from_config(config.clone()).await?;
-    let data_config = config.clone();
+    let _data_config = config.clone();
     tracing::info!(
         guild_id = ?guild_id,
         onboarding_target_count = config.onboarding.targets.len(),
@@ -32,15 +32,16 @@ async fn main() -> anyhow::Result<()> {
                 if let Some(guild_id) = guild_id {
                     let commands =
                         poise::builtins::create_application_commands(&framework.options().commands);
-                    let registered_commands = guild_id.set_commands(ctx, commands).await?;
+                    let _registered_commands = guild_id.set_commands(ctx, commands).await?;
                     tracing::info!(%guild_id, "registered guild slash commands");
-                    configure_onboard_command_permissions(
-                        ctx,
-                        guild_id,
-                        &registered_commands,
-                        &data_config,
-                    )
-                    .await?;
+                    // Discord does not allow bots to update application command permissions.
+                    // configure_onboard_command_permissions(
+                    //     ctx,
+                    //     guild_id,
+                    //     &_registered_commands,
+                    //     &_data_config,
+                    // )
+                    // .await?;
                 } else {
                     poise::builtins::register_globally(ctx, &framework.options().commands).await?;
                     tracing::warn!(
@@ -62,6 +63,7 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 async fn configure_onboard_command_permissions(
     ctx: &serenity::Context,
     guild_id: serenity::GuildId,
