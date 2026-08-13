@@ -1,6 +1,8 @@
+pub mod verify_repository;
+
 use anyhow::{Context, Result};
 use secrecy::ExposeSecret;
-use sqlx::{PgPool, postgres::PgPoolOptions};
+use sqlx::{PgPool, migrate, postgres::PgPoolOptions};
 
 use crate::config::DBConfig;
 
@@ -20,6 +22,13 @@ pub async fn connect(config: &DBConfig) -> Result<PgPool> {
         max_connections = config.max_connections,
         "󰄬 connected to Postgres"
     );
+
+    tracing::info!("loading migrations..");
+    migrate!()
+        .run(&pool)
+        .await
+        .context("failed to run migrations")?;
+    tracing::info!("migrations loaded");
 
     Ok(pool)
 }

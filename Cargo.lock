@@ -2333,6 +2333,7 @@ dependencies = [
  "sha2 0.10.9",
  "smallvec",
  "thiserror 2.0.18",
+ "time",
  "tokio",
  "tokio-stream",
  "tracing",
@@ -2369,7 +2370,9 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sqlx-core",
+ "sqlx-mysql",
  "sqlx-postgres",
+ "sqlx-sqlite",
  "syn 2.0.117",
  "thiserror 2.0.18",
  "tokio",
@@ -2385,6 +2388,7 @@ dependencies = [
  "bitflags",
  "byteorder",
  "bytes",
+ "crc",
  "digest 0.11.3",
  "dotenvy",
  "either",
@@ -2398,6 +2402,7 @@ dependencies = [
  "sha2 0.11.0",
  "sqlx-core",
  "thiserror 2.0.18",
+ "time",
  "tracing",
 ]
 
@@ -2432,6 +2437,7 @@ dependencies = [
  "sqlx-core",
  "stringprep",
  "thiserror 2.0.18",
+ "time",
  "tracing",
  "whoami",
 ]
@@ -2456,6 +2462,7 @@ dependencies = [
  "serde",
  "sqlx-core",
  "thiserror 2.0.18",
+ "time",
  "tracing",
  "url",
 ]

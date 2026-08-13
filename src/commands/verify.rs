@@ -1,5 +1,6 @@
 use crate::{
     Data, Error,
+    db::verify_repository,
     domain::verification::{CheckCodeResult, EmailAddress, StartVerificationResult},
 };
 use poise::{CreateReply, serenity_prelude as serenity};
@@ -99,15 +100,10 @@ pub async fn verify(ctx: ApplicationContext<'_>, email: String) -> std::result::
         .has_role(ctx.serenity_context(), guild_id, role_id)
         .await?
     {
-        let has_recorded_identity = {
-            let verified_identities = ctx
-                .data()
-                .verified_identities
-                .lock()
-                .map_err(|err| format!("verified identity store lock poisoned: {err}"))?;
-
-            verified_identities.get(user.id.get()).is_some()
-        };
+        let has_recorded_identity =
+            verify_repository::find_user_by_id(&ctx.data().db, user.id.get())
+                .await?
+                .is_some();
 
         if has_recorded_identity {
             tracing::info!(user_id = %user.id, guild_id = %guild_id, "user is already verified");
@@ -237,6 +233,9 @@ pub async fn verify(ctx: ApplicationContext<'_>, email: String) -> std::result::
 
     let member = guild_id.member(ctx.serenity_context(), user.id).await?;
     member.add_role(ctx.serenity_context(), role_id).await?;
+
+    verify_repository::upsert(&ctx.data().db, user_id, attempt.email()).await?;
+
     {
         let mut verified_identities = ctx
             .data()

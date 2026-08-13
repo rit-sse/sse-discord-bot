@@ -61,6 +61,20 @@ pub struct EmailAddress {
     domain: String,
 }
 
+impl VerifiedIdentity {
+    pub(crate) fn from_persisted(
+        user_id: u64,
+        email: EmailAddress,
+        verified_at: SystemTime,
+    ) -> Self {
+        Self {
+            user_id,
+            email,
+            verified_at,
+        }
+    }
+}
+
 impl EmailAddress {
     pub fn parse(email: &str) -> Result<EmailAddress> {
         let (user, domain) = email
