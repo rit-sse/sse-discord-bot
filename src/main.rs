@@ -1,6 +1,5 @@
 use poise::serenity_prelude as serenity;
-use sse_discord_bot::{Error, commands, config::AppConfig, data_from_config, guild_id, logging};
-use std::collections::HashSet;
+use sse_discord_bot::{commands, config::AppConfig, data_from_config, guild_id, logging};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -11,17 +10,20 @@ async fn main() -> anyhow::Result<()> {
     let intents = serenity::GatewayIntents::non_privileged();
     let bot_token = sse_discord_bot::bot_token(&config);
     let guild_id = guild_id(&config);
-    let data = data_from_config(config.clone()).await?;
-    let _data_config = config.clone();
+    let enabled_features = config.features.names().join(",");
+    let enabled_commands = commands::enabled(&config.features);
+    let command_count = enabled_commands.len();
+    let data = data_from_config(&config).await?;
     tracing::info!(
         guild_id = ?guild_id,
-        onboarding_target_count = config.onboarding.targets.len(),
+        enabled_features,
+        command_count,
         "starting discord bot..."
     );
 
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
-            commands: commands::all(),
+            commands: enabled_commands,
             event_handler: |ctx, event, _framework, data| {
                 Box::pin(async move { commands::handle_event(ctx, event, data).await })
             },
@@ -30,6 +32,9 @@ async fn main() -> anyhow::Result<()> {
         .setup(move |ctx, _ready, framework| {
             Box::pin(async move {
                 if let Some(guild_id) = guild_id {
+                    serenity::Command::set_global_commands(ctx, Vec::new()).await?;
+                    tracing::info!("cleared global slash commands for guild-scoped deployment");
+
                     let commands =
                         poise::builtins::create_application_commands(&framework.options().commands);
                     let _registered_commands = guild_id.set_commands(ctx, commands).await?;
@@ -60,59 +65,5 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("discord client built; connecting to gateway...");
     client.start().await?;
-    Ok(())
-}
-
-#[allow(dead_code)]
-async fn configure_onboard_command_permissions(
-    ctx: &serenity::Context,
-    guild_id: serenity::GuildId,
-    registered_commands: &[serenity::Command],
-    config: &AppConfig,
-) -> Result<(), Error> {
-    let Some(onboard_command) = registered_commands
-        .iter()
-        .find(|command| command.name == "onboard")
-    else {
-        tracing::warn!(%guild_id, "could not find registered onboard command to configure permissions");
-        return Ok(());
-    };
-
-    let manager_role_ids = config
-        .onboarding
-        .targets
-        .iter()
-        .flat_map(|target| target.approver_role_ids.iter().copied())
-        .collect::<HashSet<_>>();
-
-    if manager_role_ids.is_empty() {
-        tracing::warn!(
-            %guild_id,
-            command_id = %onboard_command.id,
-            "no manager roles configured for onboard command visibility"
-        );
-        return Ok(());
-    }
-
-    let mut permissions = vec![serenity::CreateCommandPermission::everyone(guild_id, false)];
-    permissions.extend(manager_role_ids.iter().map(|role_id| {
-        serenity::CreateCommandPermission::role(serenity::RoleId::new(*role_id), true)
-    }));
-
-    guild_id
-        .edit_command_permissions(
-            ctx,
-            onboard_command.id,
-            serenity::EditCommandPermissions::new(permissions),
-        )
-        .await?;
-
-    tracing::info!(
-        %guild_id,
-        command_id = %onboard_command.id,
-        manager_role_count = manager_role_ids.len(),
-        "configured onboard command visibility"
-    );
-
     Ok(())
 }

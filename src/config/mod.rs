@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     env::{self, VarError},
     error::Error,
     str::FromStr,
@@ -11,7 +12,6 @@ use secrecy::SecretString;
 pub struct DiscordConfig {
     pub bot_token: SecretString,
     pub guild_id: Option<u64>,
-    pub verified_role_id: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -25,6 +25,12 @@ pub struct EmailConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct VerificationConfig {
+    pub verified_role_id: u64,
+    pub email: EmailConfig,
+}
+
+#[derive(Debug, Clone)]
 pub struct AuthentikConfig {
     pub base_url: String,
     pub client_id: String,
@@ -35,6 +41,7 @@ pub struct AuthentikConfig {
 
 #[derive(Debug, Clone)]
 pub struct OnboardingConfig {
+    pub authentik: AuthentikConfig,
     pub review_channel_id: u64,
     pub officer_role_id: u64,
     pub headscale_login_url: String,
@@ -51,11 +58,23 @@ pub struct OnboardingTargetConfig {
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
+    pub features: FeatureSet,
     pub discord: DiscordConfig,
-    pub email: EmailConfig,
-    pub authentik: AuthentikConfig,
-    pub onboarding: OnboardingConfig,
+    pub verification: Option<VerificationConfig>,
+    pub onboarding: Option<OnboardingConfig>,
     pub db: DBConfig,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Feature {
+    Age,
+    Verification,
+    Onboarding,
+}
+
+#[derive(Debug, Clone)]
+pub struct FeatureSet {
+    enabled: HashSet<Feature>,
 }
 
 #[derive(Debug, Clone)]
@@ -107,7 +126,6 @@ impl DiscordConfig {
         Ok(Self {
             bot_token: secret("BOT_TOKEN")?,
             guild_id: optional("GUILD_ID")?,
-            verified_role_id: optional("VERIFIED_ROLE_ID")?,
         })
     }
 }
@@ -121,6 +139,15 @@ impl EmailConfig {
             smtp_username: secret("SMTP_USERNAME")?,
             smtp_password: secret("SMTP_PASSWORD")?,
             from_address: required("EMAIL_FROM_ADDRESS")?,
+        })
+    }
+}
+
+impl VerificationConfig {
+    fn from_env() -> Result<Self> {
+        Ok(Self {
+            verified_role_id: required("VERIFIED_ROLE_ID")?,
+            email: EmailConfig::from_env()?,
         })
     }
 }
@@ -159,6 +186,7 @@ impl OnboardingConfig {
         };
 
         Ok(Self {
+            authentik: AuthentikConfig::from_env()?,
             review_channel_id: required("ONBOARDING_REVIEW_CHANNEL_ID")?,
             officer_role_id,
             headscale_login_url: required("HEADSCALE_LOGIN_URL")?,
@@ -183,13 +211,93 @@ impl AppConfig {
             tracing::debug!("debug build detected; verbose development logging is enabled");
         }
 
+        let features = FeatureSet::from_env()?;
+        let verification = features
+            .contains(Feature::Verification)
+            .then(VerificationConfig::from_env)
+            .transpose()?;
+        let onboarding = features
+            .contains(Feature::Onboarding)
+            .then(OnboardingConfig::from_env)
+            .transpose()?;
+
         Ok(Self {
+            features,
             discord: DiscordConfig::from_env()?,
-            email: EmailConfig::from_env()?,
-            authentik: AuthentikConfig::from_env()?,
-            onboarding: OnboardingConfig::from_env()?,
+            verification,
+            onboarding,
             db: DBConfig::from_env()?,
         })
+    }
+}
+
+impl FeatureSet {
+    fn from_env() -> Result<Self> {
+        required::<String>("BOT_FEATURES")?.parse()
+    }
+
+    pub fn contains(&self, feature: Feature) -> bool {
+        self.enabled.contains(&feature)
+    }
+
+    pub fn names(&self) -> Vec<&'static str> {
+        [Feature::Age, Feature::Verification, Feature::Onboarding]
+            .into_iter()
+            .filter(|feature| self.contains(*feature))
+            .map(Feature::name)
+            .collect()
+    }
+}
+
+impl FromStr for FeatureSet {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        let enabled = value
+            .split(',')
+            .map(str::trim)
+            .filter(|feature| !feature.is_empty())
+            .map(Feature::from_str)
+            .collect::<Result<HashSet<_>>>()?;
+
+        if enabled.is_empty() {
+            return Err(anyhow::anyhow!(
+                "BOT_FEATURES must enable at least one feature"
+            ));
+        }
+
+        if enabled.contains(&Feature::Onboarding) && !enabled.contains(&Feature::Verification) {
+            return Err(anyhow::anyhow!(
+                "onboarding requires the verification feature"
+            ));
+        }
+
+        Ok(Self { enabled })
+    }
+}
+
+impl Feature {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Age => "age",
+            Self::Verification => "verification",
+            Self::Onboarding => "onboarding",
+        }
+    }
+}
+
+impl FromStr for Feature {
+    type Err = anyhow::Error;
+
+    fn from_str(value: &str) -> Result<Self> {
+        match value {
+            "age" => Ok(Self::Age),
+            "verification" => Ok(Self::Verification),
+            "onboarding" => Ok(Self::Onboarding),
+            unknown => Err(anyhow::anyhow!(
+                "unknown BOT_FEATURES entry `{unknown}`; expected age, verification, or onboarding"
+            )),
+        }
     }
 }
 
@@ -256,4 +364,51 @@ fn parse_role_ids(value: &str) -> anyhow::Result<Vec<u64>> {
         .filter(|role_id| !role_id.trim().is_empty())
         .map(|role_id| Ok(role_id.trim().parse()?))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_enabled_features() {
+        let features = "age, verification, onboarding"
+            .parse::<FeatureSet>()
+            .expect("feature set should parse");
+
+        assert_eq!(features.names(), vec!["age", "verification", "onboarding"]);
+    }
+
+    #[test]
+    fn rejects_unknown_feature() {
+        let error = "verification,unknown"
+            .parse::<FeatureSet>()
+            .expect_err("unknown feature should be rejected");
+
+        assert!(error.to_string().contains("unknown BOT_FEATURES entry"));
+    }
+
+    #[test]
+    fn rejects_onboarding_without_verification() {
+        let error = "onboarding"
+            .parse::<FeatureSet>()
+            .expect_err("onboarding dependency should be enforced");
+
+        assert_eq!(
+            error.to_string(),
+            "onboarding requires the verification feature"
+        );
+    }
+
+    #[test]
+    fn rejects_empty_feature_set() {
+        let error = "  ,  "
+            .parse::<FeatureSet>()
+            .expect_err("empty feature set should be rejected");
+
+        assert_eq!(
+            error.to_string(),
+            "BOT_FEATURES must enable at least one feature"
+        );
+    }
 }

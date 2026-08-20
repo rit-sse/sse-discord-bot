@@ -11,33 +11,66 @@ use secrecy::ExposeSecret;
 use sqlx::PgPool;
 use std::sync::Mutex;
 
-use config::AppConfig;
+use config::{AppConfig, OnboardingConfig, VerificationConfig};
 use domain::onboarding::OnboardingStore;
 
-pub struct Data {
-    pub config: AppConfig,
+pub struct VerificationModule {
+    pub config: VerificationConfig,
     pub email_sender: EmailSender,
-    pub onboarding_store: Mutex<OnboardingStore>,
+}
+
+pub struct OnboardingModule {
+    pub config: OnboardingConfig,
+    pub store: Mutex<OnboardingStore>,
     pub authentik_client: AuthentikClient,
+}
+
+#[derive(Default)]
+pub struct EnabledModules {
+    pub verification: Option<VerificationModule>,
+    pub onboarding: Option<OnboardingModule>,
+}
+
+pub struct Data {
+    pub modules: EnabledModules,
     pub db: PgPool,
 }
 
 pub type Error = Box<dyn std::error::Error + Send + Sync>;
 pub type Context<'a> = poise::Context<'a, Data, Error>;
 
-pub async fn data_from_config(config: AppConfig) -> anyhow::Result<Data> {
+pub async fn data_from_config(config: &AppConfig) -> anyhow::Result<Data> {
     tracing::debug!("initializing application dependencies");
     let db = db::connect(&config.db).await?;
-    let email_sender = EmailSender::new(config.email.clone())?;
-    let authentik_client = AuthentikClient::new(config.authentik.clone())?;
+    let verification = config
+        .verification
+        .as_ref()
+        .map(|verification_config| {
+            Ok::<_, anyhow::Error>(VerificationModule {
+                config: verification_config.clone(),
+                email_sender: EmailSender::new(verification_config.email.clone())?,
+            })
+        })
+        .transpose()?;
+    let onboarding = config
+        .onboarding
+        .as_ref()
+        .map(|onboarding_config| {
+            Ok::<_, anyhow::Error>(OnboardingModule {
+                config: onboarding_config.clone(),
+                store: Mutex::new(OnboardingStore::new()),
+                authentik_client: AuthentikClient::new(onboarding_config.authentik.clone())?,
+            })
+        })
+        .transpose()?;
 
     tracing::debug!("application dependencies initialized");
 
     Ok(Data {
-        config,
-        email_sender,
-        onboarding_store: Mutex::new(OnboardingStore::new()),
-        authentik_client,
+        modules: EnabledModules {
+            verification,
+            onboarding,
+        },
         db,
     })
 }

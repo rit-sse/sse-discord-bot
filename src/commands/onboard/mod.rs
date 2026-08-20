@@ -48,19 +48,25 @@ pub async fn onboard(
         return Ok(());
     };
 
-    let Some(verified_role_id) = ctx.data().config.discord.verified_role_id else {
-        tracing::warn!("onboarding requested but VERIFIED_ROLE_ID is not configured");
-        ephemeral_reply(ctx, "Onboarding is not configured yet.").await?;
+    let Some(onboarding) = ctx.data().modules.onboarding.as_ref() else {
+        tracing::error!("onboarding command invoked while onboarding is disabled");
+        ephemeral_reply(ctx, "Onboarding is currently disabled.").await?;
+        return Ok(());
+    };
+    let Some(verification) = ctx.data().modules.verification.as_ref() else {
+        tracing::error!("onboarding command invoked without the verification dependency");
+        ephemeral_reply(ctx, "Onboarding is currently unavailable.").await?;
         return Ok(());
     };
 
+    let verified_role_id = verification.config.verified_role_id;
     let role_id = serenity::RoleId::new(verified_role_id);
     let requester = ctx.author();
     let requester_member = guild_id
         .member(ctx.serenity_context(), requester.id)
         .await?;
     let target_member = guild_id.member(ctx.serenity_context(), user.id).await?;
-    let Some(target_config) = find_target(&ctx.data().config.onboarding.targets, &target) else {
+    let Some(target_config) = find_target(&onboarding.config.targets, &target) else {
         tracing::warn!(
             requested_by_user_id = requester.id.get(),
             target_user_id = user.id.get(),
@@ -71,7 +77,7 @@ pub async fn onboard(
             ctx,
             format!(
                 "I do not recognize that onboarding target. Available targets: {}",
-                available_targets(&ctx.data().config.onboarding.targets)
+                available_targets(&onboarding.config.targets)
             ),
         )
         .await?;
@@ -136,9 +142,8 @@ pub async fn onboard(
     };
 
     let start_result = {
-        let mut onboarding_store = ctx
-            .data()
-            .onboarding_store
+        let mut onboarding_store = onboarding
+            .store
             .lock()
             .map_err(|err| format!("onboarding store lock poisoned: {err}"))?;
 
@@ -193,6 +198,11 @@ pub async fn handle_component_interaction(
     interaction: &serenity::ComponentInteraction,
     data: &Data,
 ) -> Result<(), Error> {
+    if data.modules.onboarding.is_none() {
+        tracing::warn!("ignored onboarding interaction while onboarding is disabled");
+        return Ok(());
+    }
+
     let custom_id = interaction.data.custom_id.as_str();
     let Some((action, request_id)) = parse_onboarding_custom_id(custom_id) else {
         return Ok(());
@@ -243,8 +253,8 @@ async fn send_review_request(
     ctx: ApplicationContext<'_>,
     request: &OnboardingRequest,
 ) -> Result<(), Error> {
-    let review_channel_id =
-        serenity::ChannelId::new(ctx.data().config.onboarding.review_channel_id);
+    let onboarding = onboarding_module(ctx.data())?;
+    let review_channel_id = serenity::ChannelId::new(onboarding.config.review_channel_id);
     let approve_custom_id = format!("{APPROVE_PREFIX}{}", request.id());
     let deny_custom_id = format!("{DENY_PREFIX}{}", request.id());
     let components = vec![serenity::CreateActionRow::Buttons(vec![
@@ -282,9 +292,10 @@ async fn approve_request(
     data: &Data,
     request_id: OnboardingRequestId,
 ) -> Result<(), Error> {
+    let onboarding = onboarding_module(data)?;
     let approval_result = {
-        let mut onboarding_store = data
-            .onboarding_store
+        let mut onboarding_store = onboarding
+            .store
             .lock()
             .map_err(|err| format!("onboarding store lock poisoned: {err}"))?;
 
@@ -348,7 +359,7 @@ async fn approve_request(
         authentik_group_uuid = %target_config.authentik_group_uuid,
         "provisioning approved onboarding request"
     );
-    let authentik_user = data
+    let authentik_user = onboarding
         .authentik_client
         .find_or_create_user(
             request.email(),
@@ -356,7 +367,8 @@ async fn approve_request(
             &request.email().to_string(),
         )
         .await?;
-    data.authentik_client
+    onboarding
+        .authentik_client
         .add_user_to_group(&authentik_user, &target_config.authentik_group_uuid)
         .await?;
 
@@ -367,8 +379,8 @@ async fn approve_request(
             serenity_ctx,
             serenity::CreateMessage::new().content(format!(
                 "Your SSE infra onboarding was approved.\n\nAuthentik: {}\nHeadscale: {}",
-                data.authentik_client.login_url(),
-                data.config.onboarding.headscale_login_url
+                onboarding.authentik_client.login_url(),
+                onboarding.config.headscale_login_url
             )),
         )
         .await
@@ -407,9 +419,10 @@ async fn deny_request(
     data: &Data,
     request_id: OnboardingRequestId,
 ) -> Result<(), Error> {
+    let onboarding = onboarding_module(data)?;
     let deny_result = {
-        let mut onboarding_store = data
-            .onboarding_store
+        let mut onboarding_store = onboarding
+            .store
             .lock()
             .map_err(|err| format!("onboarding store lock poisoned: {err}"))?;
 
@@ -473,13 +486,14 @@ async fn interaction_is_from_officer(
     interaction: &serenity::ComponentInteraction,
     data: &Data,
 ) -> Result<bool, Error> {
+    let onboarding = onboarding_module(data)?;
     let custom_id = interaction.data.custom_id.as_str();
     let Some((_, request_id)) = parse_onboarding_custom_id(custom_id) else {
         return Ok(false);
     };
     let request = {
-        let onboarding_store = data
-            .onboarding_store
+        let onboarding_store = onboarding
+            .store
             .lock()
             .map_err(|err| format!("onboarding store lock poisoned: {err}"))?;
 
@@ -556,7 +570,15 @@ fn target_for_request<'a>(
     data: &'a Data,
     request: &OnboardingRequest,
 ) -> Option<&'a OnboardingTargetConfig> {
-    find_target(&data.config.onboarding.targets, request.target_key())
+    let onboarding = data.modules.onboarding.as_ref()?;
+    find_target(&onboarding.config.targets, request.target_key())
+}
+
+fn onboarding_module(data: &Data) -> Result<&crate::OnboardingModule, Error> {
+    data.modules
+        .onboarding
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("onboarding module is disabled").into())
 }
 
 fn can_approve_target(member: &serenity::Member, target_config: &OnboardingTargetConfig) -> bool {

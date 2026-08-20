@@ -84,12 +84,13 @@ pub async fn verify(ctx: ApplicationContext<'_>, email: String) -> std::result::
         return Ok(());
     };
 
-    let Some(verified_role_id) = ctx.data().config.discord.verified_role_id else {
-        tracing::warn!("verification requested but VERIFIED_ROLE_ID is not configured");
-        ephemeral_reply(ctx, "Verification is not configured yet.").await?;
+    let Some(verification) = ctx.data().modules.verification.as_ref() else {
+        tracing::error!("verification command invoked while verification is disabled");
+        ephemeral_reply(ctx, "Verification is currently disabled.").await?;
         return Ok(());
     };
 
+    let verified_role_id = verification.config.verified_role_id;
     let user = ctx.author();
     let user_id = user.id.get();
     let role_id = serenity::RoleId::new(verified_role_id);
@@ -145,8 +146,7 @@ pub async fn verify(ctx: ApplicationContext<'_>, email: String) -> std::result::
 
     match start_result {
         StartPendingVerificationResult::Created => {
-            if let Err(error) = ctx
-                .data()
+            if let Err(error) = verification
                 .email_sender
                 .send_verification_code(&email, &code)
                 .await

@@ -104,6 +104,28 @@ Privileged actions should require explicit officer/admin commands and should be 
 - Make verification, onboarding, and role changes replayable, reviewable, and auditable.
 - Keep deployment portable; do not bake Shuttle or any single hosting platform into core application logic.
 
+## Runtime Features
+
+`BOT_FEATURES` explicitly controls which modules are initialized and exposed. Disabled modules do not load their configuration, construct integration clients, register commands, or process their interactions.
+
+| Feature | Commands | Required configuration |
+| --- | --- | --- |
+| `age` | `/age` | Core configuration only |
+| `verification` | `/verify` | `VERIFIED_ROLE_ID` and SMTP configuration |
+| `onboarding` | `/onboard` and onboarding components | Verification plus Authentik and onboarding configuration |
+
+Onboarding depends on verification, and startup rejects configurations that enable onboarding alone. To run only the email-verification workflow, set:
+
+```dotenv
+BOT_FEATURES=verification
+```
+
+To run every currently implemented feature, set:
+
+```dotenv
+BOT_FEATURES=age,verification,onboarding
+```
+
 ## Local Development
 
 Copy the example environment file and fill in the values for your development services:
@@ -112,7 +134,9 @@ Copy the example environment file and fill in the values for your development se
 cp .env.example .env
 ```
 
-Configure `AUTHENTIK_USERNAME` and `AUTHENTIK_PASSWORD` with a dedicated Authentik service account and app password. `AUTHENTIK_CLIENT_ID` identifies the OAuth2 provider used for machine-to-machine login. That provider must expose the `goauthentik.io/api` scope, and the service account should have only the permissions needed to view and create users and add users to the configured groups. The bot exchanges those credentials for a short-lived access token; it does not store a static Authentik API token.
+The example enables only email verification. Configure the core, database, verified-role, and SMTP variables; Authentik and onboarding variables are not required in this mode.
+
+When onboarding is enabled, configure `AUTHENTIK_USERNAME` and `AUTHENTIK_PASSWORD` with a dedicated Authentik service account and app password. `AUTHENTIK_CLIENT_ID` identifies the OAuth2 provider used for machine-to-machine login. That provider must expose the `goauthentik.io/api` scope, and the service account should have only the permissions needed to view and create users and add users to the configured groups. The bot exchanges those credentials for a short-lived access token; it does not store a static Authentik API token.
 
 Run the migrations and start the bot:
 
