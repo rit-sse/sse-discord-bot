@@ -106,21 +106,25 @@ Privileged actions should require explicit officer/admin commands and should be 
 
 ## Local Development
 
-This repository currently contains the initial Rust project skeleton. The intended local development shape is:
+Copy the example environment file and fill in the values for your development services:
+
+```sh
+cp .env.example .env
+```
+
+Configure `AUTHENTIK_USERNAME` and `AUTHENTIK_PASSWORD` with a dedicated Authentik service account and app password. `AUTHENTIK_CLIENT_ID` identifies the OAuth2 provider used for machine-to-machine login. That provider must expose the `goauthentik.io/api` scope, and the service account should have only the permissions needed to view and create users and add users to the configured groups. The bot exchanges those credentials for a short-lived access token; it does not store a static Authentik API token.
+
+Run the migrations and start the bot:
 
 ```sh
 cargo fmt
-cargo clippy
+cargo clippy --all-targets -- -D warnings
 cargo test
+sqlx migrate run
 cargo run
 ```
 
-Expected local configuration will include:
-
-- `DISCORD_TOKEN`
-- `DATABASE_URL`
-- `RUST_LOG`
-- OAuth or verification provider credentials as verification integrations are added
+The bot also runs embedded migrations during startup. See [.env.example](.env.example) for the complete configuration surface.
 
 ## Testing Strategy
 

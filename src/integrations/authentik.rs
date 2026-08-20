@@ -2,6 +2,14 @@ use crate::{config::AuthentikConfig, domain::verification::EmailAddress};
 use anyhow::{Context, Result, anyhow};
 use secrecy::ExposeSecret;
 use serde::{Deserialize, Serialize};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use tokio::sync::Mutex;
+
+const AUTHENTIK_API_SCOPE: &str = "goauthentik.io/api";
+const TOKEN_REFRESH_BUFFER_SECONDS: u64 = 30;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct AuthentikUser {
@@ -29,10 +37,31 @@ struct AddUserToGroupRequest {
     pk: u64,
 }
 
+#[derive(Serialize)]
+struct AccessTokenRequest<'a> {
+    grant_type: &'static str,
+    client_id: &'a str,
+    username: &'a str,
+    password: &'a str,
+    scope: &'static str,
+}
+
+#[derive(Deserialize)]
+struct AccessTokenResponse {
+    access_token: String,
+    expires_in: u64,
+}
+
+struct CachedAccessToken {
+    value: secrecy::SecretString,
+    refresh_at: Instant,
+}
+
 #[derive(Clone)]
 pub struct AuthentikClient {
     config: AuthentikConfig,
     http: reqwest::Client,
+    access_token: Arc<Mutex<Option<CachedAccessToken>>>,
 }
 
 impl AuthentikClient {
@@ -50,6 +79,7 @@ impl AuthentikClient {
         Ok(Self {
             config,
             http: reqwest::Client::new(),
+            access_token: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -60,13 +90,15 @@ impl AuthentikClient {
         tracing::info!(email = %email, "looking up authentik user by email");
 
         let response = self
-            .http
-            .get(users_url)
-            .bearer_auth(self.config.api_token.expose_secret())
-            .query(&[("search", email.as_str())])
-            .send()
-            .await
-            .context("failed to query Authentik users")?;
+            .send_authenticated(
+                || {
+                    self.http
+                        .get(&users_url)
+                        .query(&[("search", email.as_str())])
+                },
+                "failed to query Authentik users",
+            )
+            .await?;
 
         if !response.status().is_success() {
             tracing::warn!(
@@ -117,19 +149,18 @@ impl AuthentikClient {
             "creating authentik user"
         );
 
+        let request = CreateUserRequest {
+            username: username.clone(),
+            name,
+            email: email.clone(),
+            path: "users".to_owned(),
+        };
         let response = self
-            .http
-            .post(users_url)
-            .bearer_auth(self.config.api_token.expose_secret())
-            .json(&CreateUserRequest {
-                username: username.clone(),
-                name,
-                email: email.clone(),
-                path: "users".to_owned(),
-            })
-            .send()
-            .await
-            .context("failed to create Authentik user")?;
+            .send_authenticated(
+                || self.http.post(&users_url).json(&request),
+                "failed to create Authentik user",
+            )
+            .await?;
 
         if !response.status().is_success() {
             tracing::warn!(
@@ -185,14 +216,13 @@ impl AuthentikClient {
             "adding authentik user to group"
         );
 
+        let request = AddUserToGroupRequest { pk: user.pk };
         let response = self
-            .http
-            .post(add_user_url)
-            .bearer_auth(self.config.api_token.expose_secret())
-            .json(&AddUserToGroupRequest { pk: user.pk })
-            .send()
-            .await
-            .context("failed to add Authentik user to Headscale group")?;
+            .send_authenticated(
+                || self.http.post(&add_user_url).json(&request),
+                "failed to add Authentik user to Headscale group",
+            )
+            .await?;
 
         if response.status().is_success() {
             tracing::info!(
@@ -219,6 +249,116 @@ impl AuthentikClient {
 
     pub fn login_url(&self) -> &str {
         &self.config.login_url
+    }
+
+    async fn send_authenticated<F>(
+        &self,
+        build_request: F,
+        error_context: &'static str,
+    ) -> Result<reqwest::Response>
+    where
+        F: Fn() -> reqwest::RequestBuilder,
+    {
+        let access_token = self.access_token().await?;
+        let response = build_request()
+            .bearer_auth(access_token.expose_secret())
+            .send()
+            .await
+            .context(error_context)?;
+
+        if response.status() != reqwest::StatusCode::UNAUTHORIZED {
+            return Ok(response);
+        }
+
+        tracing::warn!("authentik access token was rejected; authenticating again");
+        self.invalidate_access_token(&access_token).await;
+
+        let access_token = self.access_token().await?;
+        build_request()
+            .bearer_auth(access_token.expose_secret())
+            .send()
+            .await
+            .context(error_context)
+    }
+
+    async fn access_token(&self) -> Result<secrecy::SecretString> {
+        let mut cached_access_token = self.access_token.lock().await;
+
+        if let Some(cached) = cached_access_token
+            .as_ref()
+            .filter(|cached| Instant::now() < cached.refresh_at)
+        {
+            return Ok(cached.value.clone());
+        }
+
+        tracing::info!(
+            username = %self.config.username,
+            client_id = %self.config.client_id,
+            "authenticating authentik service account"
+        );
+
+        let response = self
+            .http
+            .post(self.url("/application/o/token/"))
+            .form(&AccessTokenRequest {
+                grant_type: "client_credentials",
+                client_id: &self.config.client_id,
+                username: &self.config.username,
+                password: self.config.password.expose_secret(),
+                scope: AUTHENTIK_API_SCOPE,
+            })
+            .send()
+            .await
+            .context("failed to authenticate Authentik service account")?;
+
+        if !response.status().is_success() {
+            tracing::warn!(
+                status = %response.status(),
+                "authentik service account authentication failed"
+            );
+            return Err(anyhow!(
+                "Authentik service account authentication failed with status {}",
+                response.status()
+            ));
+        }
+
+        let token: AccessTokenResponse = response
+            .json()
+            .await
+            .context("failed to parse Authentik access token response")?;
+
+        if token.access_token.is_empty() || token.expires_in == 0 {
+            return Err(anyhow!("Authentik returned an invalid access token"));
+        }
+
+        let refresh_buffer =
+            Duration::from_secs((token.expires_in / 10).min(TOKEN_REFRESH_BUFFER_SECONDS));
+        let refresh_at =
+            Instant::now() + Duration::from_secs(token.expires_in).saturating_sub(refresh_buffer);
+        let access_token = secrecy::SecretString::from(token.access_token);
+
+        *cached_access_token = Some(CachedAccessToken {
+            value: access_token.clone(),
+            refresh_at,
+        });
+
+        tracing::info!(
+            expires_in = token.expires_in,
+            "authenticated with authentik"
+        );
+
+        Ok(access_token)
+    }
+
+    async fn invalidate_access_token(&self, rejected_token: &secrecy::SecretString) {
+        let mut cached_access_token = self.access_token.lock().await;
+        let should_invalidate = cached_access_token
+            .as_ref()
+            .is_some_and(|cached| cached.value.expose_secret() == rejected_token.expose_secret());
+
+        if should_invalidate {
+            *cached_access_token = None;
+        }
     }
 
     fn url(&self, path: &str) -> String {
@@ -253,15 +393,35 @@ mod tests {
     use serde_json::json;
     use wiremock::{
         Mock, MockServer, ResponseTemplate,
-        matchers::{body_json, header, method, path, query_param},
+        matchers::{body_json, body_string_contains, header, method, path, query_param},
     };
 
     fn config(base_url: String) -> AuthentikConfig {
         AuthentikConfig {
             base_url,
-            api_token: SecretString::from("test-token"),
+            client_id: "test-client".to_owned(),
+            username: "test-service-account".to_owned(),
+            password: SecretString::from("test-app-password"),
             login_url: "https://authentik.example.com".to_owned(),
         }
+    }
+
+    async fn mount_authentication(server: &MockServer) {
+        Mock::given(method("POST"))
+            .and(path("/application/o/token/"))
+            .and(body_string_contains("grant_type=client_credentials"))
+            .and(body_string_contains("client_id=test-client"))
+            .and(body_string_contains("username=test-service-account"))
+            .and(body_string_contains("password=test-app-password"))
+            .and(body_string_contains("scope=goauthentik.io%2Fapi"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "access_token": "test-access-token",
+                "expires_in": 300,
+                "token_type": "Bearer"
+            })))
+            .expect(1)
+            .mount(server)
+            .await;
     }
 
     fn email() -> EmailAddress {
@@ -279,10 +439,11 @@ mod tests {
     #[tokio::test]
     async fn existing_authentik_user_is_found_by_exact_email() {
         let server = MockServer::start().await;
+        mount_authentication(&server).await;
         Mock::given(method("GET"))
             .and(path("/api/v3/core/users/"))
             .and(query_param("search", "test@example.com"))
-            .and(header("authorization", "Bearer test-token"))
+            .and(header("authorization", "Bearer test-access-token"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "results": [
                     {
@@ -311,9 +472,11 @@ mod tests {
     #[tokio::test]
     async fn missing_authentik_user_is_created() {
         let server = MockServer::start().await;
+        mount_authentication(&server).await;
         Mock::given(method("GET"))
             .and(path("/api/v3/core/users/"))
             .and(query_param("search", "test@example.com"))
+            .and(header("authorization", "Bearer test-access-token"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "results": []
             })))
@@ -321,6 +484,7 @@ mod tests {
             .await;
         Mock::given(method("POST"))
             .and(path("/api/v3/core/users/"))
+            .and(header("authorization", "Bearer test-access-token"))
             .and(body_json(json!({
                 "username": "test-42",
                 "name": "Test User",
@@ -350,9 +514,10 @@ mod tests {
     #[tokio::test]
     async fn authentik_user_is_added_to_headscale_group() {
         let server = MockServer::start().await;
+        mount_authentication(&server).await;
         Mock::given(method("POST"))
             .and(path("/api/v3/core/groups/group-uuid/add_user/"))
-            .and(header("authorization", "Bearer test-token"))
+            .and(header("authorization", "Bearer test-access-token"))
             .and(body_json(json!({ "pk": 2 })))
             .respond_with(ResponseTemplate::new(204))
             .mount(&server)
@@ -375,6 +540,7 @@ mod tests {
     #[tokio::test]
     async fn authentik_errors_are_returned_without_secret_values() {
         let server = MockServer::start().await;
+        mount_authentication(&server).await;
         Mock::given(method("GET"))
             .and(path("/api/v3/core/users/"))
             .respond_with(ResponseTemplate::new(403))
@@ -390,6 +556,7 @@ mod tests {
             .to_string();
 
         assert!(err.contains("403"));
-        assert!(!err.contains("test-token"));
+        assert!(!err.contains("test-access-token"));
+        assert!(!err.contains("test-app-password"));
     }
 }

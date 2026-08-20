@@ -27,6 +27,7 @@ pub struct EmailConfig {
 #[derive(Debug, Clone)]
 pub struct AuthentikConfig {
     pub base_url: String,
+    pub client_id: String,
     pub username: String,
     pub password: SecretString,
     pub login_url: String,
@@ -128,6 +129,7 @@ impl AuthentikConfig {
     fn from_env() -> Result<Self> {
         Ok(Self {
             base_url: required("AUTHENTIK_BASE_URL")?,
+            client_id: required("AUTHENTIK_CLIENT_ID")?,
             username: required("AUTHENTIK_USERNAME")?,
             password: secret("AUTHENTIK_PASSWORD")?,
             login_url: required("AUTHENTIK_LOGIN_URL")?,
