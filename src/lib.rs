@@ -12,16 +12,11 @@ use sqlx::PgPool;
 use std::sync::Mutex;
 
 use config::AppConfig;
-use domain::{
-    onboarding::OnboardingStore,
-    verification::{VerificationStore, VerifiedIdentityStore},
-};
+use domain::onboarding::OnboardingStore;
 
 pub struct Data {
     pub config: AppConfig,
     pub email_sender: EmailSender,
-    pub verification_store: Mutex<VerificationStore>,
-    pub verified_identities: Mutex<VerifiedIdentityStore>,
     pub onboarding_store: Mutex<OnboardingStore>,
     pub authentik_client: AuthentikClient,
     pub db: PgPool,
@@ -41,8 +36,6 @@ pub async fn data_from_config(config: AppConfig) -> anyhow::Result<Data> {
     Ok(Data {
         config,
         email_sender,
-        verification_store: Mutex::new(VerificationStore::new()),
-        verified_identities: Mutex::new(VerifiedIdentityStore::new()),
         onboarding_store: Mutex::new(OnboardingStore::new()),
         authentik_client,
         db,

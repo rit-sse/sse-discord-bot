@@ -1,3 +1,4 @@
+pub mod pending_verification_repository;
 pub mod verify_repository;
 
 use anyhow::{Context, Result};

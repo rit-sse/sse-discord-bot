@@ -10,27 +10,6 @@ pub struct VerifiedIdentityRow {
     verified_at: OffsetDateTime,
 }
 
-pub async fn upsert(pool: &PgPool, user_id: u64, email: &EmailAddress) -> Result<()> {
-    let user_id = i64::try_from(user_id).context("user_id is bigger than postgres BIGINT range")?;
-
-    sqlx::query(
-        r#"
-        INSERT INTO verified_identities (discord_user_id, email) VALUES ($1, $2)
-        ON CONFLICT (discord_user_id)
-        DO UPDATE SET
-            email = EXCLUDED.email,
-            verified_at = NOW()
-            "#,
-    )
-    .bind(user_id)
-    .bind(email.to_string())
-    .execute(pool)
-    .await
-    .context("failed to persist identity")?;
-
-    Ok(())
-}
-
 pub async fn find_user_by_id(pool: &PgPool, user_id: u64) -> Result<Option<VerifiedIdentity>> {
     let user_id = i64::try_from(user_id).context("user_id extends Postgres BIGINT range")?;
 

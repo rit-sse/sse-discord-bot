@@ -1,7 +1,12 @@
 use crate::{
     Data, Error,
-    db::verify_repository,
-    domain::verification::{CheckCodeResult, EmailAddress, StartVerificationResult},
+    db::{
+        pending_verification_repository::{
+            self, CheckPendingVerificationResult, StartPendingVerificationResult,
+        },
+        verify_repository,
+    },
+    domain::verification::{EmailAddress, VerificationCode},
 };
 use poise::{CreateReply, serenity_prelude as serenity};
 use std::time::Duration;
@@ -74,14 +79,6 @@ async fn prompt_retry_modal(
 /// Starts email verification by generating a one-time code.
 #[poise::command(slash_command)]
 pub async fn verify(ctx: ApplicationContext<'_>, email: String) -> std::result::Result<(), Error> {
-    let email = match EmailAddress::parse(&email) {
-        Ok(email) => email,
-        Err(err) => {
-            ephemeral_reply(ctx, format!("That does not look like a valid email: {err}")).await?;
-            return Ok(());
-        }
-    };
-
     let Some(guild_id) = ctx.guild_id() else {
         ephemeral_reply(ctx, "Verification only works inside a server.").await?;
         return Ok(());
@@ -94,23 +91,33 @@ pub async fn verify(ctx: ApplicationContext<'_>, email: String) -> std::result::
     };
 
     let user = ctx.author();
+    let user_id = user.id.get();
     let role_id = serenity::RoleId::new(verified_role_id);
-
-    if user
+    let has_verified_role = user
         .has_role(ctx.serenity_context(), guild_id, role_id)
-        .await?
-    {
-        let has_recorded_identity =
-            verify_repository::find_user_by_id(&ctx.data().db, user.id.get())
-                .await?
-                .is_some();
+        .await?;
+    let persisted_identity = verify_repository::find_user_by_id(&ctx.data().db, user_id).await?;
 
-        if has_recorded_identity {
+    if let Some(identity) = persisted_identity {
+        if !has_verified_role {
+            let member = guild_id.member(ctx.serenity_context(), user.id).await?;
+            member.add_role(ctx.serenity_context(), role_id).await?;
+            tracing::info!(
+                user_id = %user.id,
+                guild_id = %guild_id,
+                role_id = %role_id,
+                email = %identity.email(),
+                "restored verified role from persisted identity"
+            );
+        } else {
             tracing::info!(user_id = %user.id, guild_id = %guild_id, "user is already verified");
-            ephemeral_reply(ctx, "You are already verified.").await?;
-            return Ok(());
         }
 
+        ephemeral_reply(ctx, "You are already verified.").await?;
+        return Ok(());
+    }
+
+    if has_verified_role {
         tracing::info!(
             user_id = %user.id,
             guild_id = %guild_id,
@@ -118,43 +125,65 @@ pub async fn verify(ctx: ApplicationContext<'_>, email: String) -> std::result::
         );
     }
 
-    let user_id = user.id.get();
-    let start_result = {
-        let mut verification_store = ctx
-            .data()
-            .verification_store
-            .lock()
-            .map_err(|err| format!("verification store lock poisoned: {err}"))?;
-
-        verification_store.start_or_reuse(user_id, email)
-    };
-
-    let (attempt, should_send_email) = match start_result {
-        StartVerificationResult::Created(attempt) => (attempt, true),
-        StartVerificationResult::Reused(attempt) => {
-            tracing::info!(
-                user_id = %user.id,
-                guild_id = %guild_id,
-                email = %attempt.email(),
-                "reusing pending verification attempt"
-            );
-            (attempt, false)
+    let email = match EmailAddress::parse(&email) {
+        Ok(email) => email,
+        Err(err) => {
+            ephemeral_reply(ctx, format!("That does not look like a valid email: {err}")).await?;
+            return Ok(());
         }
     };
 
-    if should_send_email {
-        ctx.data()
-            .email_sender
-            .send_verification_code(attempt.email(), attempt.code())
-            .await?;
+    let code = VerificationCode::generate();
+    let code_hash = code.hash()?;
+    let start_result = pending_verification_repository::start_or_reuse(
+        &ctx.data().db,
+        user_id,
+        &email,
+        &code_hash,
+    )
+    .await?;
 
-        tracing::info!(
-            user_id = attempt.user_id(),
-            guild_id = %guild_id,
-            role_id = %role_id,
-            email = %attempt.email(),
-            "created verification attempt and sent verification email"
-        );
+    match start_result {
+        StartPendingVerificationResult::Created => {
+            if let Err(error) = ctx
+                .data()
+                .email_sender
+                .send_verification_code(&email, &code)
+                .await
+            {
+                if let Err(cleanup_error) = pending_verification_repository::delete_if_code_matches(
+                    &ctx.data().db,
+                    user_id,
+                    &code_hash,
+                )
+                .await
+                {
+                    tracing::error!(
+                        user_id = %user.id,
+                        guild_id = %guild_id,
+                        error = %cleanup_error,
+                        "failed to clean up verification after email delivery failure"
+                    );
+                }
+
+                return Err(error.into());
+            }
+
+            tracing::info!(
+                user_id,
+                guild_id = %guild_id,
+                role_id = %role_id,
+                email = %email,
+                "created verification attempt and sent verification email"
+            );
+        }
+        StartPendingVerificationResult::Reused => {
+            tracing::info!(
+                user_id = %user.id,
+                guild_id = %guild_id,
+                "reusing pending verification attempt"
+            );
+        }
     }
 
     let Some(modal_data) = ({
@@ -170,20 +199,14 @@ pub async fn verify(ctx: ApplicationContext<'_>, email: String) -> std::result::
     };
 
     let mut submitted_code = modal_data.code;
-    let attempt = loop {
-        let verification_result = {
-            let mut verification_store = ctx
-                .data()
-                .verification_store
-                .lock()
-                .map_err(|err| format!("verification store lock poisoned: {err}"))?;
-
-            verification_store.check_code(user_id, &submitted_code)
-        };
+    let verified_email = loop {
+        let verification_result =
+            pending_verification_repository::check_code(&ctx.data().db, user_id, &submitted_code)
+                .await?;
 
         match verification_result {
-            CheckCodeResult::Accepted(attempt) => break attempt,
-            CheckCodeResult::Missing => {
+            CheckPendingVerificationResult::Accepted { email } => break email,
+            CheckPendingVerificationResult::Missing => {
                 ephemeral_reply(
                     ctx,
                     "I could not find a pending verification attempt. Please run `/verify` again.",
@@ -191,7 +214,7 @@ pub async fn verify(ctx: ApplicationContext<'_>, email: String) -> std::result::
                 .await?;
                 return Ok(());
             }
-            CheckCodeResult::Expired => {
+            CheckPendingVerificationResult::Expired => {
                 tracing::info!(user_id = %user.id, guild_id = %guild_id, "verification attempt expired");
                 ephemeral_reply(
                     ctx,
@@ -200,7 +223,7 @@ pub async fn verify(ctx: ApplicationContext<'_>, email: String) -> std::result::
                 .await?;
                 return Ok(());
             }
-            CheckCodeResult::Incorrect {
+            CheckPendingVerificationResult::Incorrect {
                 attempts_remaining,
                 has_attempts_remaining,
             } => {
@@ -234,23 +257,11 @@ pub async fn verify(ctx: ApplicationContext<'_>, email: String) -> std::result::
     let member = guild_id.member(ctx.serenity_context(), user.id).await?;
     member.add_role(ctx.serenity_context(), role_id).await?;
 
-    verify_repository::upsert(&ctx.data().db, user_id, attempt.email()).await?;
-
-    {
-        let mut verified_identities = ctx
-            .data()
-            .verified_identities
-            .lock()
-            .map_err(|err| format!("verified identity store lock poisoned: {err}"))?;
-
-        verified_identities.record_verified(user_id, attempt.email().clone());
-    }
-
     tracing::info!(
         user_id = %user.id,
         guild_id = %guild_id,
         role_id = %role_id,
-        email = %attempt.email(),
+        email = %verified_email,
         "verified user"
     );
     ephemeral_reply(ctx, "You have been successfully verified.").await?;

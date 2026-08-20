@@ -1,6 +1,7 @@
 use crate::{
     Data, Error,
     config::OnboardingTargetConfig,
+    db::verify_repository,
     domain::onboarding::{
         ApproveOnboardingResult, DenyOnboardingResult, OnboardingRequest, OnboardingRequestId,
         StartOnboardingResult,
@@ -113,15 +114,8 @@ pub async fn onboard(
         return Ok(());
     }
 
-    let verified_identity = {
-        let verified_identities = ctx
-            .data()
-            .verified_identities
-            .lock()
-            .map_err(|err| format!("verified identity store lock poisoned: {err}"))?;
-
-        verified_identities.get(user.id.get()).cloned()
-    };
+    let verified_identity =
+        verify_repository::find_user_by_id(&ctx.data().db, user.id.get()).await?;
 
     let Some(verified_identity) = verified_identity else {
         tracing::info!(
