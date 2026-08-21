@@ -28,6 +28,7 @@ pub struct EmailConfig {
 pub struct VerificationConfig {
     pub verified_role_id: u64,
     pub log_channel_id: Option<u64>,
+    pub allowed_email_domains: Vec<String>,
     pub email: EmailConfig,
 }
 
@@ -149,9 +150,36 @@ impl VerificationConfig {
         Ok(Self {
             verified_role_id: required("VERIFIED_ROLE_ID")?,
             log_channel_id: optional("VERIFICATION_LOG_CHANNEL_ID")?,
+            allowed_email_domains: parse_email_domains(&defaulted(
+                "VERIFICATION_ALLOWED_EMAIL_DOMAINS",
+                "rit.edu".to_owned(),
+            )?)?,
             email: EmailConfig::from_env()?,
         })
     }
+}
+
+fn parse_email_domains(value: &str) -> Result<Vec<String>> {
+    let mut domains = Vec::new();
+
+    for entry in value.split(',') {
+        let domain = entry.trim().to_ascii_lowercase();
+        if domain.is_empty() || domain.contains('@') || domain.chars().any(char::is_whitespace) {
+            anyhow::bail!(
+                "invalid VERIFICATION_ALLOWED_EMAIL_DOMAINS entry `{entry}`; expected domain names such as rit.edu"
+            );
+        }
+
+        if !domains.contains(&domain) {
+            domains.push(domain);
+        }
+    }
+
+    if domains.is_empty() {
+        anyhow::bail!("VERIFICATION_ALLOWED_EMAIL_DOMAINS cannot be empty");
+    }
+
+    Ok(domains)
 }
 
 impl AuthentikConfig {
@@ -412,5 +440,20 @@ mod tests {
             error.to_string(),
             "BOT_FEATURES must enable at least one feature"
         );
+    }
+
+    #[test]
+    fn parses_verification_email_domain_allowlist() {
+        let domains = parse_email_domains(" RIT.EDU,alumni.rit.edu,rit.edu ")
+            .expect("email domains should parse");
+
+        assert_eq!(domains, vec!["rit.edu", "alumni.rit.edu"]);
+    }
+
+    #[test]
+    fn rejects_invalid_verification_email_domains() {
+        assert!(parse_email_domains("").is_err());
+        assert!(parse_email_domains("@rit.edu").is_err());
+        assert!(parse_email_domains("rit.edu, ").is_err());
     }
 }

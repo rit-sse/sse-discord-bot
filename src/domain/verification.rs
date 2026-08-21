@@ -27,6 +27,7 @@ pub struct EmailAddress {
 
 impl EmailAddress {
     pub fn parse(email: &str) -> Result<Self> {
+        let email = email.trim();
         let (user, domain) = email
             .split_once('@')
             .ok_or(anyhow!("Invalid email: missing '@' symbol"))?;
@@ -35,10 +36,22 @@ impl EmailAddress {
             return Err(anyhow!("Invalid email: missing user or domain"));
         }
 
+        if domain.contains('@') {
+            return Err(anyhow!("Invalid email: too many '@' symbols"));
+        }
+
+        if user.chars().any(char::is_whitespace) || domain.chars().any(char::is_whitespace) {
+            return Err(anyhow!("Invalid email: whitespace is not allowed"));
+        }
+
         Ok(Self {
             user: user.to_owned(),
-            domain: domain.to_owned(),
+            domain: domain.to_ascii_lowercase(),
         })
+    }
+
+    pub fn domain(&self) -> &str {
+        &self.domain
     }
 }
 
@@ -120,9 +133,10 @@ mod tests {
 
     #[test]
     fn parses_valid_email_address() {
-        let parsed = EmailAddress::parse("test@example.com").expect("email should parse");
+        let parsed = EmailAddress::parse("test@EXAMPLE.COM").expect("email should parse");
 
         assert_eq!(parsed.to_string(), "test@example.com");
+        assert_eq!(parsed.domain(), "example.com");
     }
 
     #[test]
@@ -130,6 +144,8 @@ mod tests {
         assert!(EmailAddress::parse("not-an-email").is_err());
         assert!(EmailAddress::parse("@example.com").is_err());
         assert!(EmailAddress::parse("test@").is_err());
+        assert!(EmailAddress::parse("test@example.com@evil.example").is_err());
+        assert!(EmailAddress::parse("test @example.com").is_err());
     }
 
     #[test]

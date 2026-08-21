@@ -134,6 +134,33 @@ pub async fn verify(ctx: ApplicationContext<'_>, email: String) -> std::result::
         }
     };
 
+    if !verification
+        .config
+        .allowed_email_domains
+        .iter()
+        .any(|allowed_domain| email.domain() == allowed_domain)
+    {
+        tracing::warn!(
+            user_id = %user.id,
+            guild_id = %guild_id,
+            submitted_domain = %email.domain(),
+            "rejected verification email outside allowed domains"
+        );
+        let allowed_domains = verification
+            .config
+            .allowed_email_domains
+            .iter()
+            .map(|domain| format!("@{domain}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        ephemeral_reply(
+            ctx,
+            format!("Verification requires an email address from: {allowed_domains}"),
+        )
+        .await?;
+        return Ok(());
+    }
+
     let code = VerificationCode::generate();
     let code_hash = code.hash()?;
     let start_result = pending_verification_repository::start_or_reuse(
