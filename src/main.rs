@@ -7,7 +7,8 @@ async fn main() -> anyhow::Result<()> {
     logging::init();
 
     let config = AppConfig::from_env()?;
-    let intents = serenity::GatewayIntents::non_privileged();
+    let intents =
+        serenity::GatewayIntents::non_privileged() | serenity::GatewayIntents::GUILD_MEMBERS;
     let bot_token = sse_discord_bot::bot_token(&config);
     let guild_id = guild_id(&config);
     let enabled_features = config.features.names().join(",");

@@ -27,6 +27,7 @@ pub struct EmailConfig {
 #[derive(Debug, Clone)]
 pub struct VerificationConfig {
     pub verified_role_id: u64,
+    pub unverified_role_id: Option<u64>,
     pub log_channel_id: Option<u64>,
     pub allowed_email_domains: Vec<String>,
     pub email: EmailConfig,
@@ -149,6 +150,7 @@ impl VerificationConfig {
     fn from_env() -> Result<Self> {
         Ok(Self {
             verified_role_id: required("VERIFIED_ROLE_ID")?,
+            unverified_role_id: optional("UNVERIFIED_ROLE_ID")?,
             log_channel_id: optional("VERIFICATION_LOG_CHANNEL_ID")?,
             allowed_email_domains: parse_email_domains(&defaulted(
                 "VERIFICATION_ALLOWED_EMAIL_DOMAINS",

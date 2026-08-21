@@ -15,6 +15,7 @@ pub fn enabled(features: &FeatureSet) -> Vec<poise::Command<Data, Error>> {
     }
     if features.contains(Feature::Verification) {
         commands.push(verify::verify());
+        commands.push(verify::verification_panel());
     }
     if features.contains(Feature::Onboarding) {
         commands.push(onboard::onboard());
@@ -28,15 +29,30 @@ pub async fn handle_event(
     event: &poise::serenity_prelude::FullEvent,
     data: &Data,
 ) -> Result<(), Error> {
-    if data.modules.onboarding.is_none() {
-        return Ok(());
-    }
+    use poise::serenity_prelude::{FullEvent, Interaction};
 
-    if let poise::serenity_prelude::FullEvent::InteractionCreate {
-        interaction: poise::serenity_prelude::Interaction::Component(component_interaction),
-    } = event
-    {
-        onboard::handle_component_interaction(serenity_ctx, component_interaction, data).await?;
+    match event {
+        FullEvent::GuildMemberAddition { new_member } if data.modules.verification.is_some() => {
+            verify::handle_member_join(serenity_ctx, new_member, data).await?;
+        }
+        FullEvent::InteractionCreate {
+            interaction: Interaction::Component(component_interaction),
+        } => {
+            if data.modules.verification.is_some() {
+                verify::handle_component_interaction(serenity_ctx, component_interaction, data)
+                    .await?;
+            }
+            if data.modules.onboarding.is_some() {
+                onboard::handle_component_interaction(serenity_ctx, component_interaction, data)
+                    .await?;
+            }
+        }
+        FullEvent::InteractionCreate {
+            interaction: Interaction::Modal(modal_interaction),
+        } if data.modules.verification.is_some() => {
+            verify::handle_modal_interaction(serenity_ctx, modal_interaction, data).await?;
+        }
+        _ => {}
     }
 
     Ok(())
@@ -56,7 +72,7 @@ mod tests {
             .map(|command| command.name)
             .collect::<Vec<_>>();
 
-        assert_eq!(command_names, vec!["verify"]);
+        assert_eq!(command_names, vec!["verify", "verification_panel"]);
     }
 
     #[test]
@@ -69,6 +85,9 @@ mod tests {
             .map(|command| command.name)
             .collect::<Vec<_>>();
 
-        assert_eq!(command_names, vec!["age", "verify", "onboard"]);
+        assert_eq!(
+            command_names,
+            vec!["age", "verify", "verification_panel", "onboard"]
+        );
     }
 }
