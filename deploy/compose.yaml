@@ -1,0 +1,58 @@
+name: sse-discord-bot
+
+services:
+  postgres:
+    image: postgres:18.4-bookworm
+    restart: unless-stopped
+    shm_size: 128mb
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in deploy/.env}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in deploy/.env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in deploy/.env}
+      POSTGRES_INITDB_ARGS: --data-checksums
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready --username="$${POSTGRES_USER}" --dbname="$${POSTGRES_DB}"
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
+  bot:
+    image: ${BOT_IMAGE:-ghcr.io/rit-sse/sse-discord-bot:main}
+    pull_policy: always
+    restart: unless-stopped
+    init: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      BOT_FEATURES: ${BOT_FEATURES:?set BOT_FEATURES in deploy/.env}
+      BOT_TOKEN: ${BOT_TOKEN:?set BOT_TOKEN in deploy/.env}
+      GUILD_ID: ${GUILD_ID:?set GUILD_ID in deploy/.env}
+      DATABASE_URL: ${DATABASE_URL:?set DATABASE_URL in deploy/.env}
+      DATABASE_MAX_CONNECTIONS: ${DATABASE_MAX_CONNECTIONS:-10}
+      VERIFIED_ROLE_ID: ${VERIFIED_ROLE_ID:?set VERIFIED_ROLE_ID in deploy/.env}
+      SMTP_HOST: ${SMTP_HOST:?set SMTP_HOST in deploy/.env}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-true}
+      SMTP_USERNAME: ${SMTP_USERNAME:?set SMTP_USERNAME in deploy/.env}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:?set SMTP_PASSWORD in deploy/.env}
+      EMAIL_FROM_ADDRESS: ${EMAIL_FROM_ADDRESS:?set EMAIL_FROM_ADDRESS in deploy/.env}
+      RUST_LOG: ${RUST_LOG:-info}
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"
+
+volumes:
+  postgres_data:
