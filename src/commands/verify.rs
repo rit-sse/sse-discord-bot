@@ -151,6 +151,14 @@ pub async fn verify(ctx: ApplicationContext<'_>, email: String) -> std::result::
                 .send_verification_code(&email, &code)
                 .await
             {
+                tracing::error!(
+                    user_id = %user.id,
+                    guild_id = %guild_id,
+                    email = %email,
+                    error = %format!("{error:#}"),
+                    "verification email delivery failed"
+                );
+
                 if let Err(cleanup_error) = pending_verification_repository::delete_if_code_matches(
                     &ctx.data().db,
                     user_id,
@@ -256,6 +264,41 @@ pub async fn verify(ctx: ApplicationContext<'_>, email: String) -> std::result::
 
     let member = guild_id.member(ctx.serenity_context(), user.id).await?;
     member.add_role(ctx.serenity_context(), role_id).await?;
+
+    if let Some(log_channel_id) = verification.config.log_channel_id {
+        let log_channel_id = serenity::ChannelId::new(log_channel_id);
+        let message = serenity::CreateMessage::new().embed(
+            serenity::CreateEmbed::new()
+                .title("Member verified")
+                .field(
+                    "Discord user",
+                    format!("{} ({})", user.name, user.id),
+                    false,
+                )
+                .field("Email", verified_email.to_string(), false)
+                .field("Role ID", role_id.to_string(), false)
+                .color(0x57_F2_87),
+        );
+
+        match log_channel_id
+            .send_message(ctx.serenity_context(), message)
+            .await
+        {
+            Ok(_) => tracing::info!(
+                user_id = %user.id,
+                guild_id = %guild_id,
+                log_channel_id = %log_channel_id,
+                "posted verification audit record"
+            ),
+            Err(error) => tracing::error!(
+                user_id = %user.id,
+                guild_id = %guild_id,
+                log_channel_id = %log_channel_id,
+                error = %error,
+                "failed to post verification audit record"
+            ),
+        }
+    }
 
     tracing::info!(
         user_id = %user.id,

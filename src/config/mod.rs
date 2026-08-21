@@ -27,6 +27,7 @@ pub struct EmailConfig {
 #[derive(Debug, Clone)]
 pub struct VerificationConfig {
     pub verified_role_id: u64,
+    pub log_channel_id: Option<u64>,
     pub email: EmailConfig,
 }
 
@@ -147,6 +148,7 @@ impl VerificationConfig {
     fn from_env() -> Result<Self> {
         Ok(Self {
             verified_role_id: required("VERIFIED_ROLE_ID")?,
+            log_channel_id: optional("VERIFICATION_LOG_CHANNEL_ID")?,
             email: EmailConfig::from_env()?,
         })
     }
