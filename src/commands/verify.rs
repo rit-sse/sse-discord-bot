@@ -6,7 +6,7 @@ use crate::{
         },
         verify_repository,
     },
-    domain::verification::{EmailAddress, VerificationCode},
+    domain::verification::{DisplayName, EmailAddress, VerificationCode},
 };
 use poise::{CreateReply, serenity_prelude as serenity};
 use std::time::Duration;
@@ -16,6 +16,7 @@ type ApplicationContext<'a> = poise::ApplicationContext<'a, Data, Error>;
 const VERIFY_START_BUTTON_ID: &str = "verify:start";
 const VERIFY_EMAIL_MODAL_ID: &str = "verify:email";
 const VERIFY_EMAIL_INPUT_ID: &str = "verify:email:value";
+const VERIFY_NAME_INPUT_ID: &str = "verify:name:value";
 const VERIFY_CODE_BUTTON_ID: &str = "verify:code";
 const VERIFY_CODE_MODAL_ID: &str = "verify:code:modal";
 const VERIFY_CODE_INPUT_ID: &str = "verify:code:value";
@@ -79,13 +80,19 @@ async fn start_verification(
     guild_id: serenity::GuildId,
     user_id: serenity::UserId,
     email: &EmailAddress,
+    display_name: &DisplayName,
 ) -> Result<StartPendingVerificationResult, Error> {
     let verification = verification_module(data)?;
     let code = VerificationCode::generate();
     let code_hash = code.hash()?;
-    let start_result =
-        pending_verification_repository::start_or_reuse(&data.db, user_id.get(), email, &code_hash)
-            .await?;
+    let start_result = pending_verification_repository::start_or_reuse(
+        &data.db,
+        user_id.get(),
+        email,
+        display_name,
+        &code_hash,
+    )
+    .await?;
 
     match start_result {
         StartPendingVerificationResult::Created => {
@@ -139,11 +146,30 @@ async fn start_verification(
     Ok(start_result)
 }
 
-async fn sync_verified_roles(
+async fn sync_verified_member(
     serenity_ctx: &serenity::Context,
     member: &serenity::Member,
+    display_name: &DisplayName,
     verification: &VerificationModule,
 ) -> Result<(), Error> {
+    if member.nick.as_deref() != Some(display_name.as_str()) {
+        member
+            .guild_id
+            .edit_member(
+                serenity_ctx,
+                member.user.id,
+                serenity::EditMember::new().nickname(display_name.as_str()),
+            )
+            .await?;
+
+        tracing::info!(
+            user_id = %member.user.id,
+            guild_id = %member.guild_id,
+            display_name = %display_name,
+            "updated verified member nickname"
+        );
+    }
+
     let verified_role_id = serenity::RoleId::new(verification.config.verified_role_id);
     if !member.roles.contains(&verified_role_id) {
         member.add_role(serenity_ctx, verified_role_id).await?;
@@ -165,11 +191,12 @@ async fn complete_verification(
     guild_id: serenity::GuildId,
     user: &serenity::User,
     verified_email: &EmailAddress,
+    display_name: &DisplayName,
 ) -> Result<(), Error> {
     let verification = verification_module(data)?;
     let role_id = serenity::RoleId::new(verification.config.verified_role_id);
     let member = guild_id.member(serenity_ctx, user.id).await?;
-    sync_verified_roles(serenity_ctx, &member, verification).await?;
+    sync_verified_member(serenity_ctx, &member, display_name, verification).await?;
 
     if let Some(log_channel_id) = verification.config.log_channel_id {
         let log_channel_id = serenity::ChannelId::new(log_channel_id);
@@ -181,6 +208,7 @@ async fn complete_verification(
                     format!("{} ({})", user.name, user.id),
                     false,
                 )
+                .field("Preferred name", display_name.as_str(), false)
                 .field("Email", verified_email.to_string(), false)
                 .field("Role ID", role_id.to_string(), false)
                 .color(0x57_F2_87),
@@ -208,6 +236,7 @@ async fn complete_verification(
         guild_id = %guild_id,
         role_id = %role_id,
         email = %verified_email,
+        display_name = %display_name,
         "verified user"
     );
     Ok(())
@@ -259,7 +288,11 @@ async fn prompt_retry_modal(
 
 /// Starts email verification by generating a one-time code.
 #[poise::command(slash_command)]
-pub async fn verify(ctx: ApplicationContext<'_>, email: String) -> std::result::Result<(), Error> {
+pub async fn verify(
+    ctx: ApplicationContext<'_>,
+    #[description = "Authorized email address"] email: String,
+    #[description = "Preferred name and Discord nickname"] name: String,
+) -> std::result::Result<(), Error> {
     let Some(guild_id) = ctx.guild_id() else {
         ephemeral_reply(ctx, "Verification only works inside a server.").await?;
         return Ok(());
@@ -278,34 +311,6 @@ pub async fn verify(ctx: ApplicationContext<'_>, email: String) -> std::result::
         .has_role(ctx.serenity_context(), guild_id, role_id)
         .await?;
     let persisted_identity = verify_repository::find_user_by_id(&ctx.data().db, user_id).await?;
-
-    if let Some(identity) = persisted_identity {
-        let member = guild_id.member(ctx.serenity_context(), user.id).await?;
-        sync_verified_roles(ctx.serenity_context(), &member, verification).await?;
-        if !has_verified_role {
-            tracing::info!(
-                user_id = %user.id,
-                guild_id = %guild_id,
-                role_id = %role_id,
-                email = %identity.email(),
-                "restored verified role from persisted identity"
-            );
-        } else {
-            tracing::info!(user_id = %user.id, guild_id = %guild_id, "user is already verified");
-        }
-
-        ephemeral_reply(ctx, "You are already verified.").await?;
-        return Ok(());
-    }
-
-    if has_verified_role {
-        tracing::info!(
-            user_id = %user.id,
-            guild_id = %guild_id,
-            "user has verified role but no recorded verified identity; refreshing verification"
-        );
-    }
-
     let email = match parse_authorized_email(verification, &email) {
         Ok(email) => email,
         Err(message) => {
@@ -319,8 +324,61 @@ pub async fn verify(ctx: ApplicationContext<'_>, email: String) -> std::result::
             return Ok(());
         }
     };
+    let display_name = match DisplayName::parse_discord_nickname(&name) {
+        Ok(display_name) => display_name,
+        Err(error) => {
+            ephemeral_reply(ctx, format!("Please enter a valid preferred name: {error}")).await?;
+            return Ok(());
+        }
+    };
 
-    start_verification(ctx.data(), guild_id, user.id, &email).await?;
+    if let Some(identity) = persisted_identity {
+        if identity.email() != &email {
+            ephemeral_reply(
+                ctx,
+                "You are already verified with a different email address. Ask an officer for help if it needs to be changed.",
+            )
+            .await?;
+            return Ok(());
+        }
+        verify_repository::confirm_display_name(&ctx.data().db, user_id, &email, &display_name)
+            .await?;
+        let member = guild_id.member(ctx.serenity_context(), user.id).await?;
+        sync_verified_member(ctx.serenity_context(), &member, &display_name, verification).await?;
+        if !has_verified_role {
+            tracing::info!(
+                user_id = %user.id,
+                guild_id = %guild_id,
+                role_id = %role_id,
+                email = %identity.email(),
+                "restored verified role from persisted identity"
+            );
+        } else {
+            tracing::info!(
+                user_id = %user.id,
+                guild_id = %guild_id,
+                display_name = %display_name,
+                "confirmed display name for verified user"
+            );
+        }
+
+        ephemeral_reply(
+            ctx,
+            "You are verified. Your preferred name and server nickname have been updated.",
+        )
+        .await?;
+        return Ok(());
+    }
+
+    if has_verified_role {
+        tracing::info!(
+            user_id = %user.id,
+            guild_id = %guild_id,
+            "user has verified role but no recorded verified identity; refreshing verification"
+        );
+    }
+
+    start_verification(ctx.data(), guild_id, user.id, &email, &display_name).await?;
 
     let Some(modal_data) = ({
         poise::execute_modal::<_, _, VerificationCodeModal>(
@@ -341,7 +399,10 @@ pub async fn verify(ctx: ApplicationContext<'_>, email: String) -> std::result::
                 .await?;
 
         match verification_result {
-            CheckPendingVerificationResult::Accepted { email } => break email,
+            CheckPendingVerificationResult::Accepted {
+                email,
+                display_name,
+            } => break (email, display_name),
             CheckPendingVerificationResult::Missing => {
                 ephemeral_reply(
                     ctx,
@@ -390,15 +451,21 @@ pub async fn verify(ctx: ApplicationContext<'_>, email: String) -> std::result::
         }
     };
 
+    let (verified_email, display_name) = verified_email;
     complete_verification(
         ctx.serenity_context(),
         ctx.data(),
         guild_id,
         user,
         &verified_email,
+        &display_name,
     )
     .await?;
-    ephemeral_reply(ctx, "You have been successfully verified.").await?;
+    ephemeral_reply(
+        ctx,
+        "You have been successfully verified, and your server nickname was updated.",
+    )
+    .await?;
     Ok(())
 }
 
@@ -423,7 +490,7 @@ pub async fn verification_panel(ctx: ApplicationContext<'_>) -> Result<(), Error
             ctx.serenity_context(),
             serenity::CreateMessage::new()
                 .content(
-                    "Verify your membership using your authorized email address. Your address is only used to confirm your identity.",
+                    "Verify your membership by confirming your preferred name and authorized email address. Your email is used to confirm your identity, and your preferred name becomes your Discord nickname and SSE infrastructure account name.",
                 )
                 .components(vec![serenity::CreateActionRow::Buttons(vec![
                     serenity::CreateButton::new(VERIFY_START_BUTTON_ID)
@@ -458,20 +525,39 @@ pub async fn handle_component_interaction(
                 return Ok(());
             }
 
+            let suggested_name = interaction
+                .member
+                .as_ref()
+                .map(serenity::Member::display_name)
+                .unwrap_or_else(|| interaction.user.display_name())
+                .to_owned();
             interaction
                 .create_response(
                     serenity_ctx,
                     serenity::CreateInteractionResponse::Modal(
-                        serenity::CreateModal::new(VERIFY_EMAIL_MODAL_ID, "Verify your email")
-                            .components(vec![serenity::CreateActionRow::InputText(
-                                serenity::CreateInputText::new(
-                                    serenity::InputTextStyle::Short,
-                                    "RIT email address",
-                                    VERIFY_EMAIL_INPUT_ID,
-                                )
-                                .placeholder("abc1234@rit.edu")
-                                .max_length(254),
-                            )]),
+                        serenity::CreateModal::new(VERIFY_EMAIL_MODAL_ID, "Verify your identity")
+                            .components(vec![
+                                serenity::CreateActionRow::InputText(
+                                    serenity::CreateInputText::new(
+                                        serenity::InputTextStyle::Short,
+                                        "Preferred name and Discord nickname",
+                                        VERIFY_NAME_INPUT_ID,
+                                    )
+                                    .placeholder("Ada Lovelace")
+                                    .min_length(1)
+                                    .max_length(32)
+                                    .value(suggested_name),
+                                ),
+                                serenity::CreateActionRow::InputText(
+                                    serenity::CreateInputText::new(
+                                        serenity::InputTextStyle::Short,
+                                        "RIT email address",
+                                        VERIFY_EMAIL_INPUT_ID,
+                                    )
+                                    .placeholder("abc1234@rit.edu")
+                                    .max_length(254),
+                                ),
+                            ]),
                     ),
                 )
                 .await?;
@@ -547,25 +633,6 @@ async fn handle_email_modal(
     let verification = verification_module(data)?;
     let user_id = interaction.user.id;
 
-    if let Some(identity) = verify_repository::find_user_by_id(&data.db, user_id.get()).await? {
-        let member = guild_id.member(serenity_ctx, user_id).await?;
-        sync_verified_roles(serenity_ctx, &member, verification).await?;
-        tracing::info!(
-            user_id = %user_id,
-            guild_id = %guild_id,
-            email = %identity.email(),
-            "restored verified roles from persisted identity"
-        );
-        edit_modal_response(
-            serenity_ctx,
-            interaction,
-            "You are already verified.",
-            Vec::new(),
-        )
-        .await?;
-        return Ok(());
-    }
-
     let Some(email_input) = modal_input(interaction, VERIFY_EMAIL_INPUT_ID) else {
         tracing::warn!(user_id = %user_id, guild_id = %guild_id, "verification email modal was missing its input");
         edit_modal_response(
@@ -576,6 +643,36 @@ async fn handle_email_modal(
         )
         .await?;
         return Ok(());
+    };
+    let Some(name_input) = modal_input(interaction, VERIFY_NAME_INPUT_ID) else {
+        tracing::warn!(user_id = %user_id, guild_id = %guild_id, "verification email modal was missing its name input");
+        edit_modal_response(
+            serenity_ctx,
+            interaction,
+            "The name field was missing. Please try again.",
+            Vec::new(),
+        )
+        .await?;
+        return Ok(());
+    };
+    let display_name = match DisplayName::parse_discord_nickname(name_input) {
+        Ok(display_name) => display_name,
+        Err(error) => {
+            tracing::warn!(
+                user_id = %user_id,
+                guild_id = %guild_id,
+                error = %error,
+                "rejected verification display name"
+            );
+            edit_modal_response(
+                serenity_ctx,
+                interaction,
+                format!("Please enter a valid preferred name: {error}"),
+                Vec::new(),
+            )
+            .await?;
+            return Ok(());
+        }
     };
 
     let email = match parse_authorized_email(verification, email_input) {
@@ -591,26 +688,58 @@ async fn handle_email_modal(
             return Ok(());
         }
     };
-
-    let start_result = match start_verification(data, guild_id, user_id, &email).await {
-        Ok(result) => result,
-        Err(error) => {
-            tracing::error!(
-                user_id = %user_id,
-                guild_id = %guild_id,
-                error = %format!("{error:#}"),
-                "failed to start verification from button flow"
-            );
+    if let Some(identity) = verify_repository::find_user_by_id(&data.db, user_id.get()).await? {
+        if identity.email() != &email {
             edit_modal_response(
                 serenity_ctx,
                 interaction,
-                "I could not send the verification email. Please try again later.",
+                "You are already verified with a different email address. Ask an officer for help if it needs to be changed.",
                 Vec::new(),
             )
             .await?;
             return Ok(());
         }
-    };
+        verify_repository::confirm_display_name(&data.db, user_id.get(), &email, &display_name)
+            .await?;
+        let member = guild_id.member(serenity_ctx, user_id).await?;
+        sync_verified_member(serenity_ctx, &member, &display_name, verification).await?;
+        tracing::info!(
+            user_id = %user_id,
+            guild_id = %guild_id,
+            email = %identity.email(),
+            display_name = %display_name,
+            "confirmed display name and restored roles for verified user"
+        );
+        edit_modal_response(
+            serenity_ctx,
+            interaction,
+            "You are verified. Your preferred name and server nickname have been updated.",
+            Vec::new(),
+        )
+        .await?;
+        return Ok(());
+    }
+
+    let start_result =
+        match start_verification(data, guild_id, user_id, &email, &display_name).await {
+            Ok(result) => result,
+            Err(error) => {
+                tracing::error!(
+                    user_id = %user_id,
+                    guild_id = %guild_id,
+                    error = %format!("{error:#}"),
+                    "failed to start verification from button flow"
+                );
+                edit_modal_response(
+                    serenity_ctx,
+                    interaction,
+                    "I could not send the verification email. Please try again later.",
+                    Vec::new(),
+                )
+                .await?;
+                return Ok(());
+            }
+        };
 
     let content = match start_result {
         StartPendingVerificationResult::Created => {
@@ -667,20 +796,30 @@ async fn handle_code_modal(
     };
 
     match pending_verification_repository::check_code(&data.db, user_id.get(), code).await? {
-        CheckPendingVerificationResult::Accepted { email } => {
-            if let Err(error) =
-                complete_verification(serenity_ctx, data, guild_id, &interaction.user, &email).await
+        CheckPendingVerificationResult::Accepted {
+            email,
+            display_name,
+        } => {
+            if let Err(error) = complete_verification(
+                serenity_ctx,
+                data,
+                guild_id,
+                &interaction.user,
+                &email,
+                &display_name,
+            )
+            .await
             {
                 tracing::error!(
                     user_id = %user_id,
                     guild_id = %guild_id,
                     error = %format!("{error:#}"),
-                    "verification persisted but Discord role synchronization failed"
+                    "verification persisted but Discord member synchronization failed"
                 );
                 edit_modal_response(
                     serenity_ctx,
                     interaction,
-                    "Your identity was verified, but I could not update your Discord roles. Please ask an officer for help or press Verify again.",
+                    "Your identity was verified, but I could not update your server nickname or roles. Please ask an officer for help or press Verify again.",
                     Vec::new(),
                 )
                 .await?;
@@ -690,7 +829,7 @@ async fn handle_code_modal(
             edit_modal_response(
                 serenity_ctx,
                 interaction,
-                "You have been successfully verified.",
+                "You have been successfully verified, and your server nickname was updated.",
                 Vec::new(),
             )
             .await?;
@@ -804,14 +943,25 @@ pub async fn handle_member_join(
     let user_id = member.user.id;
     let guild_id = member.guild_id;
     if let Some(identity) = verify_repository::find_user_by_id(&data.db, user_id.get()).await? {
-        sync_verified_roles(serenity_ctx, member, verification).await?;
+        if identity.is_display_name_confirmed() {
+            sync_verified_member(serenity_ctx, member, identity.display_name(), verification)
+                .await?;
+            tracing::info!(
+                user_id = %user_id,
+                guild_id = %guild_id,
+                email = %identity.email(),
+                display_name = %identity.display_name(),
+                "restored verified member state"
+            );
+            return Ok(());
+        }
+
         tracing::info!(
             user_id = %user_id,
             guild_id = %guild_id,
             email = %identity.email(),
-            "restored verified roles for returning member"
+            "returning verified member must confirm a preferred name"
         );
-        return Ok(());
     }
 
     if let Some(unverified_role_id) = verification.config.unverified_role_id {

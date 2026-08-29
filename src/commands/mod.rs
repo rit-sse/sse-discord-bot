@@ -19,6 +19,9 @@ pub fn enabled(features: &FeatureSet) -> Vec<poise::Command<Data, Error>> {
     }
     if features.contains(Feature::Onboarding) {
         commands.push(onboard::onboard());
+        commands.push(onboard::onboarding_status());
+        commands.push(onboard::onboarding_retry());
+        commands.push(onboard::onboarding_check());
     }
 
     commands
@@ -87,7 +90,15 @@ mod tests {
 
         assert_eq!(
             command_names,
-            vec!["age", "verify", "verification_panel", "onboard"]
+            vec![
+                "age",
+                "verify",
+                "verification_panel",
+                "onboard",
+                "onboarding_status",
+                "onboarding_retry",
+                "onboarding_check"
+            ]
         );
     }
 }

@@ -16,13 +16,65 @@ pub struct VerificationCode {
 pub struct VerifiedIdentity {
     user_id: u64,
     email: EmailAddress,
+    display_name: DisplayName,
+    display_name_confirmed: bool,
     verified_at: SystemTime,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DisplayName(String);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmailAddress {
     user: String,
     domain: String,
+}
+
+impl DisplayName {
+    const DISCORD_NICKNAME_MAX_LENGTH: usize = 32;
+
+    pub fn parse(display_name: &str) -> Result<Self> {
+        let display_name = display_name.trim();
+
+        if display_name.is_empty() {
+            return Err(anyhow!("Preferred name cannot be empty"));
+        }
+
+        if display_name.chars().count() > 100 {
+            return Err(anyhow!(
+                "Preferred name cannot be longer than 100 characters"
+            ));
+        }
+
+        if display_name.chars().any(char::is_control) {
+            return Err(anyhow!("Preferred name cannot contain control characters"));
+        }
+
+        Ok(Self(display_name.to_owned()))
+    }
+
+    pub fn parse_discord_nickname(display_name: &str) -> Result<Self> {
+        let display_name = Self::parse(display_name)?;
+
+        if display_name.0.chars().count() > Self::DISCORD_NICKNAME_MAX_LENGTH {
+            return Err(anyhow!(
+                "Preferred name cannot be longer than {} characters because it is also used as your Discord nickname",
+                Self::DISCORD_NICKNAME_MAX_LENGTH
+            ));
+        }
+
+        Ok(display_name)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for DisplayName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
 }
 
 impl EmailAddress {
@@ -105,11 +157,15 @@ impl VerifiedIdentity {
     pub(crate) fn from_persisted(
         user_id: u64,
         email: EmailAddress,
+        display_name: DisplayName,
+        display_name_confirmed: bool,
         verified_at: SystemTime,
     ) -> Self {
         Self {
             user_id,
             email,
+            display_name,
+            display_name_confirmed,
             verified_at,
         }
     }
@@ -120,6 +176,14 @@ impl VerifiedIdentity {
 
     pub fn email(&self) -> &EmailAddress {
         &self.email
+    }
+
+    pub fn display_name(&self) -> &DisplayName {
+        &self.display_name
+    }
+
+    pub fn is_display_name_confirmed(&self) -> bool {
+        self.display_name_confirmed
     }
 
     pub fn verified_at(&self) -> SystemTime {
@@ -146,6 +210,26 @@ mod tests {
         assert!(EmailAddress::parse("test@").is_err());
         assert!(EmailAddress::parse("test@example.com@evil.example").is_err());
         assert!(EmailAddress::parse("test @example.com").is_err());
+    }
+
+    #[test]
+    fn parses_and_trims_display_name() {
+        let parsed = DisplayName::parse("  Ada Lovelace  ").expect("name should parse");
+
+        assert_eq!(parsed.as_str(), "Ada Lovelace");
+    }
+
+    #[test]
+    fn rejects_invalid_display_name() {
+        assert!(DisplayName::parse("   ").is_err());
+        assert!(DisplayName::parse(&"a".repeat(101)).is_err());
+        assert!(DisplayName::parse("Ada\nLovelace").is_err());
+    }
+
+    #[test]
+    fn rejects_display_name_too_long_for_discord_nickname() {
+        assert!(DisplayName::parse_discord_nickname(&"a".repeat(32)).is_ok());
+        assert!(DisplayName::parse_discord_nickname(&"a".repeat(33)).is_err());
     }
 
     #[test]

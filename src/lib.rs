@@ -9,10 +9,8 @@ use integrations::{authentik::AuthentikClient, email::EmailSender};
 use poise::serenity_prelude as serenity;
 use secrecy::ExposeSecret;
 use sqlx::PgPool;
-use std::sync::Mutex;
 
 use config::{AppConfig, OnboardingConfig, VerificationConfig};
-use domain::onboarding::OnboardingStore;
 
 pub struct VerificationModule {
     pub config: VerificationConfig,
@@ -21,7 +19,6 @@ pub struct VerificationModule {
 
 pub struct OnboardingModule {
     pub config: OnboardingConfig,
-    pub store: Mutex<OnboardingStore>,
     pub authentik_client: AuthentikClient,
 }
 
@@ -58,7 +55,6 @@ pub async fn data_from_config(config: &AppConfig) -> anyhow::Result<Data> {
         .map(|onboarding_config| {
             Ok::<_, anyhow::Error>(OnboardingModule {
                 config: onboarding_config.clone(),
-                store: Mutex::new(OnboardingStore::new()),
                 authentik_client: AuthentikClient::new(onboarding_config.authentik.clone())?,
             })
         })

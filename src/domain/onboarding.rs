@@ -1,15 +1,18 @@
-use crate::domain::verification::EmailAddress;
-use rand::RngExt;
-use std::{collections::HashMap, time::SystemTime};
+use crate::domain::verification::{DisplayName, EmailAddress};
+use std::fmt;
+use time::OffsetDateTime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct OnboardingRequestId(u64);
+pub struct OnboardingRequestId(i64);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OnboardingStatus {
     Pending,
-    Denied { approver_id: u64 },
-    Approved { approver_id: u64 },
+    Approved,
+    Denied,
+    Provisioning,
+    Completed,
+    Failed,
 }
 
 #[derive(Debug, Clone)]
@@ -18,75 +21,117 @@ pub struct OnboardingRequest {
     user_id: u64,
     requested_by_user_id: u64,
     email: EmailAddress,
+    display_name: DisplayName,
     target_key: String,
     target_label: String,
-    requested_at: SystemTime,
+    requested_at: OffsetDateTime,
+    updated_at: OffsetDateTime,
     status: OnboardingStatus,
-}
-
-#[derive(Debug, Clone)]
-pub enum StartOnboardingResult {
-    Created(OnboardingRequest),
-    Reused(OnboardingRequest),
-}
-
-#[derive(Debug, Clone)]
-pub enum ApproveOnboardingResult {
-    Approved(OnboardingRequest),
-    Missing,
-    AlreadyHandled(OnboardingRequest),
-}
-
-#[derive(Debug, Clone)]
-pub enum DenyOnboardingResult {
-    Denied(OnboardingRequest),
-    Missing,
-    AlreadyHandled(OnboardingRequest),
-}
-
-#[derive(Debug, Default)]
-pub struct OnboardingStore {
-    pending_requests_by_user_and_target: HashMap<(u64, String), OnboardingRequestId>,
-    requests: HashMap<OnboardingRequestId, OnboardingRequest>,
+    decided_by_user_id: Option<u64>,
+    decided_at: Option<OffsetDateTime>,
+    review_channel_id: Option<u64>,
+    review_message_id: Option<u64>,
+    provisioning_attempts: u32,
+    provisioning_started_at: Option<OffsetDateTime>,
+    authentik_user_id: Option<u64>,
+    last_error: Option<String>,
+    completed_at: Option<OffsetDateTime>,
 }
 
 impl OnboardingRequestId {
-    pub fn generate() -> Self {
-        Self(rand::rng().random())
+    pub fn new(value: i64) -> Option<Self> {
+        (value > 0).then_some(Self(value))
     }
 
     pub fn parse(value: &str) -> Option<Self> {
-        value.parse().ok().map(Self)
+        value.parse().ok().and_then(Self::new)
     }
 
-    pub fn get(self) -> u64 {
+    pub fn get(self) -> i64 {
         self.0
     }
 }
 
-impl std::fmt::Display for OnboardingRequestId {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Display for OnboardingRequestId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(formatter, "{}", self.0)
     }
 }
 
+impl OnboardingStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Approved => "approved",
+            Self::Denied => "denied",
+            Self::Provisioning => "provisioning",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "pending" => Some(Self::Pending),
+            "approved" => Some(Self::Approved),
+            "denied" => Some(Self::Denied),
+            "provisioning" => Some(Self::Provisioning),
+            "completed" => Some(Self::Completed),
+            "failed" => Some(Self::Failed),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for OnboardingStatus {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 impl OnboardingRequest {
-    fn new(
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_persisted(
+        id: OnboardingRequestId,
         user_id: u64,
         requested_by_user_id: u64,
         email: EmailAddress,
-        target_key: impl Into<String>,
-        target_label: impl Into<String>,
+        display_name: DisplayName,
+        target_key: String,
+        target_label: String,
+        requested_at: OffsetDateTime,
+        updated_at: OffsetDateTime,
+        status: OnboardingStatus,
+        decided_by_user_id: Option<u64>,
+        decided_at: Option<OffsetDateTime>,
+        review_channel_id: Option<u64>,
+        review_message_id: Option<u64>,
+        provisioning_attempts: u32,
+        provisioning_started_at: Option<OffsetDateTime>,
+        authentik_user_id: Option<u64>,
+        last_error: Option<String>,
+        completed_at: Option<OffsetDateTime>,
     ) -> Self {
         Self {
-            id: OnboardingRequestId::generate(),
+            id,
             user_id,
             requested_by_user_id,
             email,
-            target_key: target_key.into(),
-            target_label: target_label.into(),
-            requested_at: SystemTime::now(),
-            status: OnboardingStatus::Pending,
+            display_name,
+            target_key,
+            target_label,
+            requested_at,
+            updated_at,
+            status,
+            decided_by_user_id,
+            decided_at,
+            review_channel_id,
+            review_message_id,
+            provisioning_attempts,
+            provisioning_started_at,
+            authentik_user_id,
+            last_error,
+            completed_at,
         }
     }
 
@@ -106,6 +151,10 @@ impl OnboardingRequest {
         &self.email
     }
 
+    pub fn display_name(&self) -> &DisplayName {
+        &self.display_name
+    }
+
     pub fn target_key(&self) -> &str {
         &self.target_key
     }
@@ -114,124 +163,48 @@ impl OnboardingRequest {
         &self.target_label
     }
 
-    pub fn requested_at(&self) -> SystemTime {
+    pub fn requested_at(&self) -> OffsetDateTime {
         self.requested_at
     }
 
-    pub fn status(&self) -> &OnboardingStatus {
-        &self.status
+    pub fn updated_at(&self) -> OffsetDateTime {
+        self.updated_at
     }
 
-    fn is_pending(&self) -> bool {
-        self.status == OnboardingStatus::Pending
+    pub fn status(&self) -> OnboardingStatus {
+        self.status
     }
 
-    #[cfg(test)]
-    fn new_for_test(id: u64, user_id: u64, email: EmailAddress, status: OnboardingStatus) -> Self {
-        Self {
-            id: OnboardingRequestId(id),
-            user_id,
-            requested_by_user_id: 99,
-            email,
-            target_key: "headscale".to_owned(),
-            target_label: "Headscale".to_owned(),
-            requested_at: SystemTime::now(),
-            status,
-        }
-    }
-}
-
-impl OnboardingStore {
-    pub fn new() -> Self {
-        Self::default()
+    pub fn decided_by_user_id(&self) -> Option<u64> {
+        self.decided_by_user_id
     }
 
-    pub fn start_or_reuse(
-        &mut self,
-        user_id: u64,
-        requested_by_user_id: u64,
-        email: EmailAddress,
-        target_key: impl Into<String>,
-        target_label: impl Into<String>,
-    ) -> StartOnboardingResult {
-        let target_key = target_key.into();
-        let target_label = target_label.into();
-        let pending_key = (user_id, target_key.clone());
-
-        if let Some(existing_id) = self.pending_requests_by_user_and_target.get(&pending_key)
-            && let Some(existing_request) = self.requests.get(existing_id)
-            && existing_request.is_pending()
-        {
-            return StartOnboardingResult::Reused(existing_request.clone());
-        }
-
-        let request = OnboardingRequest::new(
-            user_id,
-            requested_by_user_id,
-            email,
-            target_key,
-            target_label,
-        );
-        self.pending_requests_by_user_and_target
-            .insert(pending_key, request.id());
-        self.requests.insert(request.id(), request.clone());
-        StartOnboardingResult::Created(request)
+    pub fn decided_at(&self) -> Option<OffsetDateTime> {
+        self.decided_at
     }
 
-    pub fn approve(
-        &mut self,
-        request_id: OnboardingRequestId,
-        approver_id: u64,
-    ) -> ApproveOnboardingResult {
-        let Some(request) = self.requests.get_mut(&request_id) else {
-            return ApproveOnboardingResult::Missing;
-        };
-
-        if !request.is_pending() {
-            return ApproveOnboardingResult::AlreadyHandled(request.clone());
-        }
-
-        request.status = OnboardingStatus::Approved { approver_id };
-        self.pending_requests_by_user_and_target
-            .remove(&(request.user_id, request.target_key.clone()));
-
-        ApproveOnboardingResult::Approved(request.clone())
+    pub fn review_location(&self) -> Option<(u64, u64)> {
+        Some((self.review_channel_id?, self.review_message_id?))
     }
 
-    pub fn deny(
-        &mut self,
-        request_id: OnboardingRequestId,
-        approver_id: u64,
-    ) -> DenyOnboardingResult {
-        let Some(request) = self.requests.get_mut(&request_id) else {
-            return DenyOnboardingResult::Missing;
-        };
-
-        if !request.is_pending() {
-            return DenyOnboardingResult::AlreadyHandled(request.clone());
-        }
-
-        request.status = OnboardingStatus::Denied { approver_id };
-        self.pending_requests_by_user_and_target
-            .remove(&(request.user_id, request.target_key.clone()));
-
-        DenyOnboardingResult::Denied(request.clone())
+    pub fn provisioning_attempts(&self) -> u32 {
+        self.provisioning_attempts
     }
 
-    pub fn get(&self, request_id: OnboardingRequestId) -> Option<&OnboardingRequest> {
-        self.requests.get(&request_id)
+    pub fn provisioning_started_at(&self) -> Option<OffsetDateTime> {
+        self.provisioning_started_at
     }
 
-    #[cfg(test)]
-    fn insert_request_for_test(&mut self, request: OnboardingRequest) {
-        if request.is_pending() {
-            self.pending_requests_by_user_and_target.insert(
-                (request.user_id(), request.target_key().to_owned()),
-                request.id(),
-            );
-        }
+    pub fn authentik_user_id(&self) -> Option<u64> {
+        self.authentik_user_id
+    }
 
-        self.requests.insert(request.id(), request);
+    pub fn last_error(&self) -> Option<&str> {
+        self.last_error.as_deref()
+    }
+
+    pub fn completed_at(&self) -> Option<OffsetDateTime> {
+        self.completed_at
     }
 }
 
@@ -239,89 +212,24 @@ impl OnboardingStore {
 mod tests {
     use super::*;
 
-    fn email() -> EmailAddress {
-        EmailAddress::parse("test@example.com").expect("test email should parse")
+    #[test]
+    fn request_ids_must_be_positive() {
+        assert!(OnboardingRequestId::new(1).is_some());
+        assert!(OnboardingRequestId::new(0).is_none());
+        assert!(OnboardingRequestId::new(-1).is_none());
     }
 
     #[test]
-    fn starting_onboarding_creates_new_request() {
-        let mut store = OnboardingStore::new();
-
-        let result = store.start_or_reuse(1, 99, email(), "headscale", "Headscale");
-
-        assert!(matches!(result, StartOnboardingResult::Created(_)));
-    }
-
-    #[test]
-    fn starting_onboarding_reuses_pending_request() {
-        let mut store = OnboardingStore::new();
-
-        let first = store.start_or_reuse(1, 99, email(), "headscale", "Headscale");
-        let second = store.start_or_reuse(
-            1,
-            100,
-            EmailAddress::parse("other@example.com").unwrap(),
-            "headscale",
-            "Headscale",
-        );
-
-        assert!(matches!(first, StartOnboardingResult::Created(_)));
-        assert!(matches!(second, StartOnboardingResult::Reused(_)));
-    }
-
-    #[test]
-    fn starting_different_targets_creates_separate_requests() {
-        let mut store = OnboardingStore::new();
-
-        let first = store.start_or_reuse(1, 99, email(), "headscale", "Headscale");
-        let second = store.start_or_reuse(1, 99, email(), "officers", "Officers");
-
-        assert!(matches!(first, StartOnboardingResult::Created(_)));
-        assert!(matches!(second, StartOnboardingResult::Created(_)));
-    }
-
-    #[test]
-    fn approving_request_marks_it_approved() {
-        let mut store = OnboardingStore::new();
-        store.insert_request_for_test(OnboardingRequest::new_for_test(
-            100,
-            1,
-            email(),
+    fn onboarding_status_round_trips() {
+        for status in [
             OnboardingStatus::Pending,
-        ));
-
-        let result = store.approve(OnboardingRequestId(100), 7);
-
-        assert!(matches!(
-            result,
-            ApproveOnboardingResult::Approved(OnboardingRequest {
-                status: OnboardingStatus::Approved { approver_id: 7 },
-                ..
-            })
-        ));
-    }
-
-    #[test]
-    fn denied_request_cannot_be_approved_later() {
-        let mut store = OnboardingStore::new();
-        store.insert_request_for_test(OnboardingRequest::new_for_test(
-            100,
-            1,
-            email(),
-            OnboardingStatus::Denied { approver_id: 7 },
-        ));
-
-        let result = store.approve(OnboardingRequestId(100), 8);
-
-        assert!(matches!(result, ApproveOnboardingResult::AlreadyHandled(_)));
-    }
-
-    #[test]
-    fn approving_missing_request_reports_missing() {
-        let mut store = OnboardingStore::new();
-
-        let result = store.approve(OnboardingRequestId(100), 7);
-
-        assert!(matches!(result, ApproveOnboardingResult::Missing));
+            OnboardingStatus::Approved,
+            OnboardingStatus::Denied,
+            OnboardingStatus::Provisioning,
+            OnboardingStatus::Completed,
+            OnboardingStatus::Failed,
+        ] {
+            assert_eq!(OnboardingStatus::parse(status.as_str()), Some(status));
+        }
     }
 }

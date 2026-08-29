@@ -9,6 +9,7 @@ use std::{
 use tokio::sync::Mutex;
 
 const AUTHENTIK_API_SCOPE: &str = "goauthentik.io/api";
+const RECOVERY_TOKEN_DURATION: &str = "minutes=30";
 const TOKEN_REFRESH_BUFFER_SECONDS: u64 = 30;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -35,6 +36,16 @@ struct CreateUserRequest {
 #[derive(Debug, Serialize)]
 struct AddUserToGroupRequest {
     pk: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct CreateRecoveryLinkRequest {
+    token_duration: &'static str,
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateRecoveryLinkResponse {
+    link: String,
 }
 
 #[derive(Serialize)]
@@ -251,6 +262,88 @@ impl AuthentikClient {
         &self.config.login_url
     }
 
+    pub async fn create_recovery_link(&self, user: &AuthentikUser) -> Result<String> {
+        let recovery_url = self.url(&format!("/api/v3/core/users/{}/recovery/", user.pk));
+
+        tracing::info!(
+            authentik_user_id = user.pk,
+            token_duration = RECOVERY_TOKEN_DURATION,
+            "creating authentik account recovery link"
+        );
+
+        let request = CreateRecoveryLinkRequest {
+            token_duration: RECOVERY_TOKEN_DURATION,
+        };
+        let response = self
+            .send_authenticated(
+                || self.http.post(&recovery_url).json(&request),
+                "failed to create Authentik account recovery link",
+            )
+            .await?;
+
+        if !response.status().is_success() {
+            tracing::warn!(
+                authentik_user_id = user.pk,
+                status = %response.status(),
+                "authentik account recovery link creation failed"
+            );
+            return Err(anyhow!(
+                "Authentik account recovery link creation failed with status {}",
+                response.status()
+            ));
+        }
+
+        let recovery: CreateRecoveryLinkResponse = response
+            .json()
+            .await
+            .context("failed to parse Authentik account recovery link response")?;
+        self.validate_recovery_link(&recovery.link)?;
+
+        tracing::info!(
+            authentik_user_id = user.pk,
+            "created authentik account recovery link"
+        );
+        Ok(recovery.link)
+    }
+
+    pub async fn check_api_access(&self) -> Result<()> {
+        let users_url = self.url("/api/v3/core/users/");
+        let response = self
+            .send_authenticated(
+                || self.http.get(&users_url).query(&[("page_size", "1")]),
+                "failed to check Authentik API access",
+            )
+            .await?;
+
+        if response.status().is_success() {
+            return Ok(());
+        }
+
+        Err(anyhow!(
+            "Authentik API access check failed with status {}",
+            response.status()
+        ))
+    }
+
+    pub async fn check_group_access(&self, group_uuid: &str) -> Result<()> {
+        let group_url = self.url(&format!("/api/v3/core/groups/{group_uuid}/"));
+        let response = self
+            .send_authenticated(
+                || self.http.get(&group_url),
+                "failed to check Authentik group access",
+            )
+            .await?;
+
+        if response.status().is_success() {
+            return Ok(());
+        }
+
+        Err(anyhow!(
+            "Authentik group access check failed with status {}",
+            response.status()
+        ))
+    }
+
     async fn send_authenticated<F>(
         &self,
         build_request: F,
@@ -367,6 +460,21 @@ impl AuthentikClient {
             self.config.base_url.trim_end_matches('/'),
             path.trim_start_matches('/')
         )
+    }
+
+    fn validate_recovery_link(&self, link: &str) -> Result<()> {
+        let base_url = reqwest::Url::parse(&self.config.base_url)
+            .context("failed to parse configured Authentik base URL")?;
+        let recovery_url = reqwest::Url::parse(link)
+            .context("Authentik returned an invalid account recovery link")?;
+
+        if base_url.origin() != recovery_url.origin() {
+            return Err(anyhow!(
+                "Authentik returned an account recovery link for an unexpected origin"
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -535,6 +643,83 @@ mod tests {
             .add_user_to_group(&user, "group-uuid")
             .await
             .expect("group update should succeed");
+    }
+
+    #[tokio::test]
+    async fn temporary_recovery_link_is_created_for_the_user() {
+        let server = MockServer::start().await;
+        mount_authentication(&server).await;
+        let recovery_link = format!(
+            "{}/if/flow/sse-recovery-flow/?flow_token=temporary-secret",
+            server.uri()
+        );
+        Mock::given(method("POST"))
+            .and(path("/api/v3/core/users/2/recovery/"))
+            .and(header("authorization", "Bearer test-access-token"))
+            .and(body_json(json!({ "token_duration": "minutes=30" })))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({ "link": recovery_link })),
+            )
+            .mount(&server)
+            .await;
+
+        let client = AuthentikClient::new(config(server.uri())).unwrap();
+        let user = AuthentikUser {
+            pk: 2,
+            username: "test-42".to_owned(),
+            email: "test@example.com".to_owned(),
+            name: "Test User".to_owned(),
+        };
+
+        let link = client
+            .create_recovery_link(&user)
+            .await
+            .expect("recovery link should be created");
+
+        assert_eq!(link, recovery_link);
+    }
+
+    #[test]
+    fn recovery_links_from_an_unexpected_origin_are_rejected() {
+        let client = AuthentikClient::new(config("https://authentik.example.com".to_owned()))
+            .expect("client config should be valid");
+
+        let error = client
+            .validate_recovery_link(
+                "https://attacker.example.com/if/flow/recovery/?flow_token=secret",
+            )
+            .expect_err("cross-origin recovery link should be rejected");
+
+        assert!(error.to_string().contains("unexpected origin"));
+    }
+
+    #[tokio::test]
+    async fn service_account_and_group_access_can_be_checked() {
+        let server = MockServer::start().await;
+        mount_authentication(&server).await;
+        Mock::given(method("GET"))
+            .and(path("/api/v3/core/users/"))
+            .and(query_param("page_size", "1"))
+            .and(header("authorization", "Bearer test-access-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "results": [] })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/v3/core/groups/group-uuid/"))
+            .and(header("authorization", "Bearer test-access-token"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "pk": "group-uuid" })))
+            .mount(&server)
+            .await;
+        let client = AuthentikClient::new(config(server.uri())).unwrap();
+
+        client
+            .check_api_access()
+            .await
+            .expect("service account check should succeed");
+        client
+            .check_group_access("group-uuid")
+            .await
+            .expect("group check should succeed");
     }
 
     #[tokio::test]

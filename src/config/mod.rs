@@ -45,9 +45,8 @@ pub struct AuthentikConfig {
 #[derive(Debug, Clone)]
 pub struct OnboardingConfig {
     pub authentik: AuthentikConfig,
-    pub review_channel_id: u64,
-    pub officer_role_id: u64,
     pub headscale_login_url: String,
+    pub review_channel_id: u64,
     pub targets: Vec<OnboardingTargetConfig>,
 }
 
@@ -56,6 +55,7 @@ pub struct OnboardingTargetConfig {
     pub key: String,
     pub label: String,
     pub authentik_group_uuid: String,
+    pub completion_url: Option<String>,
     pub approver_role_ids: Vec<u64>,
 }
 
@@ -124,6 +124,32 @@ fn secret(key: &'static str) -> Result<SecretString> {
     required::<String>(key).map(SecretString::from)
 }
 
+fn required_non_empty(key: &'static str) -> Result<String> {
+    let value = required::<String>(key)?;
+    if value.trim().is_empty() {
+        anyhow::bail!("{key} cannot be empty");
+    }
+    Ok(value)
+}
+
+fn non_empty_secret(key: &'static str) -> Result<SecretString> {
+    required_non_empty(key).map(SecretString::from)
+}
+
+fn required_web_url(key: &'static str) -> Result<String> {
+    let value = required_non_empty(key)?;
+    validate_web_url(&value).with_context(|| format!("invalid {key}"))?;
+    Ok(value)
+}
+
+fn validate_web_url(value: &str) -> Result<()> {
+    let url = reqwest::Url::parse(value)?;
+    if !matches!(url.scheme(), "http" | "https") {
+        anyhow::bail!("expected an http or https URL");
+    }
+    Ok(())
+}
+
 impl DiscordConfig {
     fn from_env() -> Result<Self> {
         Ok(Self {
@@ -187,19 +213,21 @@ fn parse_email_domains(value: &str) -> Result<Vec<String>> {
 impl AuthentikConfig {
     fn from_env() -> Result<Self> {
         Ok(Self {
-            base_url: required("AUTHENTIK_BASE_URL")?,
-            client_id: required("AUTHENTIK_CLIENT_ID")?,
-            username: required("AUTHENTIK_USERNAME")?,
-            password: secret("AUTHENTIK_PASSWORD")?,
-            login_url: required("AUTHENTIK_LOGIN_URL")?,
+            base_url: required_web_url("AUTHENTIK_BASE_URL")?,
+            client_id: required_non_empty("AUTHENTIK_CLIENT_ID")?,
+            username: required_non_empty("AUTHENTIK_USERNAME")?,
+            password: non_empty_secret("AUTHENTIK_PASSWORD")?,
+            login_url: required_web_url("AUTHENTIK_LOGIN_URL")?,
         })
     }
 }
 
 impl OnboardingConfig {
     fn from_env() -> Result<Self> {
-        let officer_role_id = required("ONBOARDING_OFFICER_ROLE_ID")?;
-        let targets = match optional::<String>("ONBOARDING_TARGETS")? {
+        let headscale_login_url = required_web_url("HEADSCALE_LOGIN_URL")?;
+        let targets = match optional::<String>("ONBOARDING_TARGETS")?
+            .filter(|value| !value.trim().is_empty())
+        {
             Some(value) => {
                 tracing::debug!("loading onboarding targets from ONBOARDING_TARGETS");
                 parse_onboarding_targets(&value)?
@@ -208,10 +236,12 @@ impl OnboardingConfig {
                 tracing::debug!(
                     "ONBOARDING_TARGETS missing; using legacy single headscale target config"
                 );
+                let officer_role_id = required("ONBOARDING_OFFICER_ROLE_ID")?;
                 vec![OnboardingTargetConfig {
                     key: "headscale".to_owned(),
                     label: "Headscale".to_owned(),
-                    authentik_group_uuid: required("AUTHENTIK_HEADSCALE_GROUP_UUID")?,
+                    authentik_group_uuid: required_non_empty("AUTHENTIK_HEADSCALE_GROUP_UUID")?,
+                    completion_url: None,
                     approver_role_ids: vec![officer_role_id],
                 }]
             }
@@ -219,9 +249,8 @@ impl OnboardingConfig {
 
         Ok(Self {
             authentik: AuthentikConfig::from_env()?,
+            headscale_login_url,
             review_channel_id: required("ONBOARDING_REVIEW_CHANNEL_ID")?,
-            officer_role_id,
-            headscale_login_url: required("HEADSCALE_LOGIN_URL")?,
             targets,
         })
     }
@@ -344,6 +373,13 @@ fn parse_onboarding_targets(value: &str) -> anyhow::Result<Vec<OnboardingTargetC
         return Err(anyhow::anyhow!("ONBOARDING_TARGETS cannot be empty"));
     }
 
+    let mut keys = HashSet::new();
+    for target in &targets {
+        if !keys.insert(target.key.to_ascii_lowercase()) {
+            anyhow::bail!("ONBOARDING_TARGETS contains duplicate key `{}`", target.key);
+        }
+    }
+
     Ok(targets)
 }
 
@@ -352,19 +388,44 @@ fn parse_onboarding_target(value: &str) -> anyhow::Result<OnboardingTargetConfig
 
     if parts.len() != 4 && parts.len() != 5 {
         return Err(anyhow::anyhow!(
-            "invalid ONBOARDING_TARGETS entry; expected key|label|authentik_group_uuid|manager_role_ids"
+            "invalid ONBOARDING_TARGETS entry; expected key|label|authentik_group_uuid|[completion_url|]manager_role_ids"
         ));
     }
 
     let key = parts[0].trim().to_owned();
     let label = parts[1].trim().to_owned();
     let authentik_group_uuid = parts[2].trim().to_owned();
+    let completion_url = (parts.len() == 5)
+        .then(|| parts[3].trim().to_owned())
+        .filter(|url| !url.is_empty());
     let approver_role_ids_part = if parts.len() == 4 { parts[3] } else { parts[4] };
 
     if key.is_empty() || label.is_empty() || authentik_group_uuid.is_empty() {
         return Err(anyhow::anyhow!(
             "ONBOARDING_TARGETS key, label, and authentik group UUID cannot be empty"
         ));
+    }
+    if key.len() > 64
+        || !key
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+    {
+        anyhow::bail!(
+            "ONBOARDING_TARGETS key must be at most 64 ASCII letters, numbers, hyphens, or underscores"
+        );
+    }
+    if label.len() > 100 || label.chars().any(char::is_control) {
+        anyhow::bail!(
+            "ONBOARDING_TARGETS label must be at most 100 characters without control characters"
+        );
+    }
+    if authentik_group_uuid.len() > 200 || authentik_group_uuid.chars().any(char::is_whitespace) {
+        anyhow::bail!(
+            "ONBOARDING_TARGETS authentik group UUID must be at most 200 characters without whitespace"
+        );
+    }
+    if let Some(completion_url) = completion_url.as_deref() {
+        validate_web_url(completion_url).context("invalid ONBOARDING_TARGETS completion URL")?;
     }
 
     let approver_role_ids = parse_role_ids(approver_role_ids_part)?;
@@ -386,6 +447,7 @@ fn parse_onboarding_target(value: &str) -> anyhow::Result<OnboardingTargetConfig
         key,
         label,
         authentik_group_uuid,
+        completion_url,
         approver_role_ids,
     })
 }
@@ -457,5 +519,40 @@ mod tests {
         assert!(parse_email_domains("").is_err());
         assert!(parse_email_domains("@rit.edu").is_err());
         assert!(parse_email_domains("rit.edu, ").is_err());
+    }
+
+    #[test]
+    fn parses_target_specific_completion_url_and_roles() {
+        let targets = parse_onboarding_targets(
+            "headscale|Headscale|group-uuid|https://headscale.example.com|10,20;platform|Platform|platform-group|30",
+        )
+        .expect("onboarding targets should parse");
+
+        assert_eq!(targets.len(), 2);
+        assert_eq!(
+            targets[0].completion_url.as_deref(),
+            Some("https://headscale.example.com")
+        );
+        assert_eq!(targets[0].approver_role_ids, vec![10, 20]);
+        assert_eq!(targets[1].completion_url, None);
+        assert_eq!(targets[1].approver_role_ids, vec![30]);
+    }
+
+    #[test]
+    fn rejects_duplicate_onboarding_target_keys() {
+        let error = parse_onboarding_targets(
+            "headscale|Headscale|group-one|10;HEADSCALE|Other|group-two|20",
+        )
+        .expect_err("duplicate target keys should be rejected");
+
+        assert!(error.to_string().contains("duplicate key"));
+    }
+
+    #[test]
+    fn rejects_unsafe_target_keys_and_completion_urls() {
+        assert!(parse_onboarding_targets("bad key|Bad|group|10").is_err());
+        assert!(
+            parse_onboarding_targets("headscale|Headscale|group|ftp://example.com|10").is_err()
+        );
     }
 }
