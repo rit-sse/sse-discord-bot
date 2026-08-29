@@ -14,7 +14,6 @@ pub fn enabled(features: &FeatureSet) -> Vec<poise::Command<Data, Error>> {
         commands.push(age::age());
     }
     if features.contains(Feature::Verification) {
-        commands.push(verify::verify());
         commands.push(verify::verification_panel());
     }
     if features.contains(Feature::Onboarding) {
@@ -66,7 +65,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn verification_only_registers_only_verify() {
+    fn verification_only_registers_only_panel() {
         let features = "verification"
             .parse::<FeatureSet>()
             .expect("feature set should parse");
@@ -75,7 +74,7 @@ mod tests {
             .map(|command| command.name)
             .collect::<Vec<_>>();
 
-        assert_eq!(command_names, vec!["verify", "verification_panel"]);
+        assert_eq!(command_names, vec!["verification_panel"]);
     }
 
     #[test]
@@ -92,7 +91,6 @@ mod tests {
             command_names,
             vec![
                 "age",
-                "verify",
                 "verification_panel",
                 "onboard",
                 "onboarding_status",

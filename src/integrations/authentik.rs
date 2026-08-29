@@ -9,6 +9,8 @@ use std::{
 use tokio::sync::Mutex;
 
 const AUTHENTIK_API_SCOPE: &str = "goauthentik.io/api";
+const AUTHENTIK_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+const AUTHENTIK_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const RECOVERY_TOKEN_DURATION: &str = "minutes=30";
 const TOKEN_REFRESH_BUFFER_SECONDS: u64 = 30;
 
@@ -87,9 +89,15 @@ impl AuthentikClient {
             "initialized authentik client"
         );
 
+        let http = reqwest::Client::builder()
+            .connect_timeout(AUTHENTIK_CONNECT_TIMEOUT)
+            .timeout(AUTHENTIK_REQUEST_TIMEOUT)
+            .build()
+            .context("failed to build Authentik HTTP client")?;
+
         Ok(Self {
             config,
-            http: reqwest::Client::new(),
+            http,
             access_token: Arc::new(Mutex::new(None)),
         })
     }
@@ -105,7 +113,7 @@ impl AuthentikClient {
                 || {
                     self.http
                         .get(&users_url)
-                        .query(&[("search", email.as_str())])
+                        .query(&[("email", email.as_str())])
                 },
                 "failed to query Authentik users",
             )
@@ -550,7 +558,7 @@ mod tests {
         mount_authentication(&server).await;
         Mock::given(method("GET"))
             .and(path("/api/v3/core/users/"))
-            .and(query_param("search", "test@example.com"))
+            .and(query_param("email", "test@example.com"))
             .and(header("authorization", "Bearer test-access-token"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "results": [
@@ -583,7 +591,7 @@ mod tests {
         mount_authentication(&server).await;
         Mock::given(method("GET"))
             .and(path("/api/v3/core/users/"))
-            .and(query_param("search", "test@example.com"))
+            .and(query_param("email", "test@example.com"))
             .and(header("authorization", "Bearer test-access-token"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "results": []

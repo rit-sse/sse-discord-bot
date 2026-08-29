@@ -76,6 +76,7 @@ pub async fn onboard(
     };
     let onboarding = onboarding_module(ctx.data())?;
     let verification = verification_module(ctx.data())?;
+    ctx.defer_ephemeral().await?;
     let requester_member = guild_id
         .member(ctx.serenity_context(), ctx.author().id)
         .await?;
@@ -214,6 +215,7 @@ pub async fn onboarding_status(
         return Ok(());
     };
     let onboarding = onboarding_module(ctx.data())?;
+    ctx.defer_ephemeral().await?;
     let member = guild_id
         .member(ctx.serenity_context(), ctx.author().id)
         .await?;
