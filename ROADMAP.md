@@ -1,6 +1,6 @@
 # SSE Discord Bot Roadmap
 
-Last reviewed: 2026-08-13
+Last reviewed: 2026-08-28
 
 This document defines the path from the current implementation to a dependable first production release. It is the shared reference for what is implemented, what remains, and what "complete" means for the bot.
 
@@ -23,15 +23,15 @@ The bot should let SSE members verify their identity and let authorized officers
 | Environment configuration | Complete | Discord, SMTP, Authentik, onboarding, and Postgres settings load from environment variables. |
 | Structured logging | Complete | Startup and core workflow operations use `tracing`. |
 | Postgres connection and migrations | Complete | The application opens a SQLx pool and runs embedded migrations during startup. |
-| Email verification flow | In progress | Codes are emailed, checked, and limited by expiry and retry count, but pending attempts exist only in memory. |
-| Verified identity persistence | Complete | Successful identities are upserted in Postgres and `/verify` checks persisted identities. |
+| Email verification flow | Complete | Pending attempts, retry counts, expiry, and successful identities are persisted transactionally in Postgres. |
+| Verified identity persistence | Complete | Successful identities are upserted in Postgres and the verification panel checks persisted identities. |
 | Discord verified role assignment | Complete | The verified role is assigned after a successful code check. |
-| Officer-reviewed onboarding | In progress | Requests, review buttons, approval, and denial work, but request state exists only in memory. |
-| Authentik provisioning | In progress | The client can find or create users and add them to configured groups; the production authentication contract and end-to-end behavior still need validation. |
-| Headscale onboarding | In progress | Approved users receive the configured Headscale login URL after Authentik group assignment; there is no direct Headscale lifecycle integration. |
-| Authorization | In progress | Runtime role checks protect onboarding actions. Automatic Discord command visibility is disabled because the permission endpoint cannot be called with a bot token. |
-| Audit history | Planned | Important actions are logged, but there is no durable audit-event store. |
-| Deployment and health checks | Planned | The bot can run locally, but the documented container and health-check surface do not exist yet. |
+| Officer-reviewed onboarding | In progress | Requests, decisions, review message IDs, provisioning state, retries, and audit events are durable; private-server restart acceptance is still required. |
+| Authentik provisioning | In progress | The client authenticates with the service account, finds or creates users, ensures group membership, and exposes an officer-only dependency check; live production validation remains. |
+| Headscale onboarding | In progress | Target-specific completion URLs are sent only after Authentik group assignment; the Authentik-group-plus-login-URL boundary still needs live acceptance. |
+| Authorization | Complete | Target-specific Discord roles are checked at command, decision, and provisioning execution time; target verification and persisted email are rechecked before approval/retry. |
+| Audit history | In progress | Onboarding creation, decisions, review synchronization, provisioning attempts, failures, and completion are durable and inspectable; verification events still rely on structured logs. |
+| Deployment and health checks | In progress | A production image and Postgres Compose deployment exist, including optional onboarding configuration; health/readiness endpoints remain planned. |
 
 ## Milestone 1: Durable Verification
 
@@ -44,7 +44,7 @@ Goal: verification remains correct across restarts and multiple bot instances.
 - Read the persisted identity when determining whether a user is already verified.
 - Convert Discord `u64` identifiers safely at the Postgres boundary.
 
-### 1.2 Persist pending verification attempts — Planned
+### 1.2 Persist pending verification attempts — Complete
 
 - Store the Discord user ID, email, protected verification-code value, expiration time, and failed-attempt count.
 - Reuse an unexpired attempt without sending unnecessary duplicate email.
@@ -53,7 +53,7 @@ Goal: verification remains correct across restarts and multiple bot instances.
 - Preserve retry limits across restarts and concurrent requests.
 - Do not store verification codes in plaintext.
 
-### 1.3 Make verification state transitions reliable — Planned
+### 1.3 Make verification state transitions reliable — Complete
 
 - Treat accepting a code, recording the verified identity, and consuming the attempt as one database transaction.
 - Define recovery behavior if database persistence succeeds but Discord role assignment fails, or vice versa.
@@ -71,21 +71,21 @@ Goal: verification remains correct across restarts and multiple bot instances.
 
 Goal: onboarding requests can be reviewed and completed after restarts without losing state or duplicating access.
 
-### 2.1 Persist onboarding requests — Planned
+### 2.1 Persist onboarding requests — Complete
 
 - Store request ID, target user, requesting officer, verified email, target key, request timestamp, status, and acting approver.
 - Store Discord review channel and message IDs so the review message can be reconciled later.
 - Enforce at most one pending request per user and target in the database.
 - Read verified identities from Postgres instead of the temporary in-memory store.
 
-### 2.2 Make approval and denial atomic — Planned
+### 2.2 Make approval and denial atomic — Complete
 
 - Perform pending-to-approved and pending-to-denied transitions with conditional database updates.
 - Prevent two officers or two bot instances from handling the same request twice.
 - Return a clear already-handled response when a stale button is used.
 - Preserve the actor and timestamp for every terminal decision.
 
-### 2.3 Recover review interactions — Planned
+### 2.3 Recover review interactions — In progress
 
 - Resolve button interactions from persisted request state after a restart.
 - Reconcile the Discord review message with the authoritative database status.
@@ -103,7 +103,7 @@ Goal: an approved request produces the intended external access exactly once, wi
 - Treat existing users and existing group membership as successful idempotent outcomes.
 - Classify retryable failures separately from permanent configuration or authorization failures.
 
-### 3.2 Track provisioning state — Planned
+### 3.2 Track provisioning state — Complete
 
 - Separate officer approval from provisioning completion in the request state model.
 - Record attempts, external identifiers, completion timestamps, and sanitized failure details.
@@ -116,7 +116,7 @@ Goal: an approved request produces the intended external access exactly once, wi
 - If direct Headscale operations are required, place them behind a dedicated integration adapter.
 - Record the result of each Headscale-related action in provisioning history.
 
-### 3.4 User and officer feedback — Planned
+### 3.4 User and officer feedback — In progress
 
 - Keep the review message synchronized with approved, denied, failed, retrying, and completed states.
 - Notify the user only when access is ready or when a clear follow-up action is required.
@@ -126,21 +126,21 @@ Goal: an approved request produces the intended external access exactly once, wi
 
 Goal: every privileged action is authorized at execution time and can be reconstructed later.
 
-### 4.1 Durable audit events — Planned
+### 4.1 Durable audit events — In progress
 
 - Record actor, target user, action, target system, request ID, timestamp, outcome, and safe metadata.
 - Audit verification completion, onboarding creation, approval, denial, provisioning attempts, retries, and administrative actions.
 - Make audit history append-only through the application interface.
 - Provide an officer-only way to inspect history for a user or request.
 
-### 4.2 Discord authorization — In progress
+### 4.2 Discord authorization — Complete
 
 - Keep runtime role checks authoritative for commands and component interactions.
 - Re-check authorization when an action is executed rather than relying on who can see a command.
 - Document manual command-visibility configuration in Discord Server Settings.
 - Decide whether an administrator OAuth flow is worth adding for automatic command visibility; it is not required if manual configuration is sufficient.
 
-### 4.3 Administrative controls — Planned
+### 4.3 Administrative controls — In progress
 
 - Add commands to inspect workflow status and retry failed provisioning.
 - Define cancellation and revocation behavior.
@@ -178,6 +178,15 @@ Goal: the service can be deployed, monitored, upgraded, and recovered predictabl
 - Add useful metrics for verification outcomes, pending requests, provisioning failures, and dependency health.
 - Define alerting for repeated startup, database, email, and provisioning failures.
 - Ensure logs and metrics do not contain verification codes, passwords, tokens, or unnecessary personal data.
+
+### 5.5 Privacy and data lifecycle — Planned
+
+- Present the collected account name consistently as a preferred name rather than a legal or verified name.
+- Tell members what identity data is stored, why it is needed, who can access it, and where it is sent.
+- Define retention periods for verification identities, onboarding requests, audit events, application logs, and backups.
+- Provide documented correction, offboarding, deletion, and incident-response procedures for personal data.
+- Restrict personal data in Discord channels, Postgres, logs, and backups to authorized operators with a demonstrated need.
+- Confirm the final data classification and handling expectations with RIT Information Security before declaring production readiness.
 
 ## First Production Release Definition of Done
 
