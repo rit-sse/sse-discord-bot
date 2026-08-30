@@ -692,11 +692,7 @@ async fn provision_request(
     let provisioned = async {
         let authentik_user = onboarding
             .authentik_client
-            .find_or_create_user(
-                request.email(),
-                request.user_id(),
-                request.display_name().as_str(),
-            )
+            .find_or_create_user(request.email(), request.display_name().as_str())
             .await?;
         onboarding
             .authentik_client

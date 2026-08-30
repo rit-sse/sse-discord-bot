@@ -291,7 +291,7 @@ async fn prompt_retry_modal(
 pub async fn verify(
     ctx: ApplicationContext<'_>,
     #[description = "Authorized email address"] email: String,
-    #[description = "Preferred name and Discord nickname"] name: String,
+    #[description = "Preferred name other SSE members recognize you by"] name: String,
 ) -> std::result::Result<(), Error> {
     let Some(guild_id) = ctx.guild_id() else {
         ephemeral_reply(ctx, "Verification only works inside a server.").await?;
@@ -490,7 +490,7 @@ pub async fn verification_panel(ctx: ApplicationContext<'_>) -> Result<(), Error
             ctx.serenity_context(),
             serenity::CreateMessage::new()
                 .content(
-                    "Verify your membership by confirming your preferred name and authorized email address. Your email is used to confirm your identity, and your preferred name becomes your Discord nickname and SSE infrastructure account name.",
+                    "Verify your membership by confirming your preferred name and authorized email address. Use the name other SSE members know you by, typically your first and last name. Your preferred name becomes your Discord nickname.",
                 )
                 .components(vec![serenity::CreateActionRow::Buttons(vec![
                     serenity::CreateButton::new(VERIFY_START_BUTTON_ID)
@@ -540,7 +540,7 @@ pub async fn handle_component_interaction(
                                 serenity::CreateActionRow::InputText(
                                     serenity::CreateInputText::new(
                                         serenity::InputTextStyle::Short,
-                                        "Preferred name and Discord nickname",
+                                        "Preferred name members recognize you by",
                                         VERIFY_NAME_INPUT_ID,
                                     )
                                     .placeholder("Ada Lovelace")

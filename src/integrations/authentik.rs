@@ -150,12 +150,11 @@ impl AuthentikClient {
     pub async fn create_user(
         &self,
         email: &EmailAddress,
-        discord_user_id: u64,
         display_name: &str,
     ) -> Result<AuthentikUser> {
         let users_url = self.url("/api/v3/core/users/");
         let email = email.to_string();
-        let username = username_from_email(&email, discord_user_id);
+        let username = username_from_email(&email);
         let name = if display_name.trim().is_empty() {
             username.clone()
         } else {
@@ -211,7 +210,6 @@ impl AuthentikClient {
     pub async fn find_or_create_user(
         &self,
         email: &EmailAddress,
-        discord_user_id: u64,
         display_name: &str,
     ) -> Result<AuthentikUser> {
         if let Some(user) = self.find_user_by_email(email).await? {
@@ -223,7 +221,7 @@ impl AuthentikClient {
             return Ok(user);
         }
 
-        self.create_user(email, discord_user_id, display_name).await
+        self.create_user(email, display_name).await
     }
 
     pub async fn add_user_to_group(&self, user: &AuthentikUser, group_uuid: &str) -> Result<()> {
@@ -486,20 +484,11 @@ impl AuthentikClient {
     }
 }
 
-fn username_from_email(email: &str, discord_user_id: u64) -> String {
-    let local_part = email.split_once('@').map_or(email, |(local, _)| local);
-    let sanitized: String = local_part
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
-                character
-            } else {
-                '-'
-            }
-        })
-        .collect();
-
-    format!("{sanitized}-{discord_user_id}")
+fn username_from_email(email: &str) -> String {
+    email
+        .split_once('@')
+        .map_or(email, |(local_part, _)| local_part)
+        .to_owned()
 }
 
 #[cfg(test)]
@@ -545,11 +534,8 @@ mod tests {
     }
 
     #[test]
-    fn username_from_email_is_safe_and_stable() {
-        assert_eq!(
-            username_from_email("test.user@example.com", 42),
-            "test-user-42"
-        );
+    fn username_from_email_uses_exact_local_part() {
+        assert_eq!(username_from_email("test.user@example.com"), "test.user");
     }
 
     #[tokio::test]
@@ -602,14 +588,14 @@ mod tests {
             .and(path("/api/v3/core/users/"))
             .and(header("authorization", "Bearer test-access-token"))
             .and(body_json(json!({
-                "username": "test-42",
+                "username": "test",
                 "name": "Test User",
                 "email": "test@example.com",
                 "path": "users"
             })))
             .respond_with(ResponseTemplate::new(201).set_body_json(json!({
                 "pk": 2,
-                "username": "test-42",
+                "username": "test",
                 "email": "test@example.com",
                 "name": "Test User"
             })))
@@ -619,12 +605,12 @@ mod tests {
         let client = AuthentikClient::new(config(server.uri())).unwrap();
 
         let user = client
-            .find_or_create_user(&email(), 42, "Test User")
+            .find_or_create_user(&email(), "Test User")
             .await
             .expect("missing user should be created");
 
         assert_eq!(user.pk, 2);
-        assert_eq!(user.username, "test-42");
+        assert_eq!(user.username, "test");
     }
 
     #[tokio::test]
