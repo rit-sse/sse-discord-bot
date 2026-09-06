@@ -4,6 +4,7 @@ use crate::{
 };
 
 pub mod age;
+pub mod find;
 pub mod onboard;
 pub mod verify;
 
@@ -21,6 +22,10 @@ pub fn enabled(features: &FeatureSet) -> Vec<poise::Command<Data, Error>> {
         commands.push(onboard::onboarding_status());
         commands.push(onboard::onboarding_retry());
         commands.push(onboard::onboarding_check());
+    }
+
+    if features.contains(Feature::Find) {
+        commands.push(find::find());
     }
 
     commands
@@ -79,7 +84,7 @@ mod tests {
 
     #[test]
     fn full_feature_set_registers_each_enabled_command() {
-        let features = "age,verification,onboarding"
+        let features = "age,verification,onboarding,find"
             .parse::<FeatureSet>()
             .expect("feature set should parse");
         let command_names = enabled(&features)
@@ -95,8 +100,30 @@ mod tests {
                 "onboard",
                 "onboarding_status",
                 "onboarding_retry",
-                "onboarding_check"
+                "onboarding_check",
+                "find"
             ]
         );
+    }
+
+    #[test]
+    fn find_alone_registers_a_guild_admin_command_with_a_required_email() {
+        let features = "find".parse::<FeatureSet>().expect("find should parse");
+        let commands = enabled(&features);
+        assert_eq!(commands.len(), 1);
+        let command = &commands[0];
+        assert_eq!(command.name, "find");
+        assert!(command.guild_only);
+        assert_eq!(
+            command.required_permissions,
+            poise::serenity_prelude::Permissions::MANAGE_GUILD
+        );
+        assert_eq!(
+            command.default_member_permissions,
+            command.required_permissions
+        );
+        assert_eq!(command.parameters.len(), 1);
+        assert_eq!(command.parameters[0].name, "email");
+        assert!(command.parameters[0].required);
     }
 }

@@ -113,6 +113,9 @@ Privileged actions should require explicit officer/admin commands and should be 
 | `age` | `/age` | Core configuration only |
 | `verification` | `/verify` | `VERIFIED_ROLE_ID` and SMTP configuration |
 | `onboarding` | `/onboard` and onboarding components | Verification plus Authentik and onboarding configuration |
+| `find` | `/find email:member@rit.edu` | Core configuration only; caller needs Manage Server permission |
+
+`/find` looks up a full email address in the bot's verified records and privately returns matching Discord mentions. Matching ignores email case and surrounding spaces. If multiple accounts verified with the same email, all matches are returned. The command works only in a server and cannot find accounts whose email has not been verified with this bot. Add `find` to `BOT_FEATURES` (for example, `verification,find`) and restart the bot to register the command.
 
 Onboarding depends on verification, and startup rejects configurations that enable onboarding alone. To run only the email-verification workflow, set:
 
@@ -123,7 +126,7 @@ BOT_FEATURES=verification
 To run every currently implemented feature, set:
 
 ```dotenv
-BOT_FEATURES=age,verification,onboarding
+BOT_FEATURES=age,verification,onboarding,find
 ```
 
 ## Local Development

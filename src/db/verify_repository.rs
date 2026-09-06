@@ -12,6 +12,29 @@ pub struct VerifiedIdentityRow {
     verified_at: OffsetDateTime,
 }
 
+/// Return every account verified with the full email address, ignoring case.
+pub async fn find_user_ids_by_email(pool: &PgPool, email: &EmailAddress) -> Result<Vec<u64>> {
+    let user_ids = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT discord_user_id
+        FROM verified_identities
+        WHERE LOWER(email) = LOWER($1)
+        ORDER BY discord_user_id
+        "#,
+    )
+    .bind(email.to_string())
+    .fetch_all(pool)
+    .await
+    .context("failed to look up verified Discord accounts by email")?;
+
+    user_ids
+        .into_iter()
+        .map(|user_id| {
+            u64::try_from(user_id).context("stored Discord user ID cannot be represented as u64")
+        })
+        .collect()
+}
+
 pub async fn find_user_by_id(pool: &PgPool, user_id: u64) -> Result<Option<VerifiedIdentity>> {
     let user_id = i64::try_from(user_id).context("user_id extends Postgres BIGINT range")?;
 
@@ -85,6 +108,30 @@ pub async fn confirm_display_name(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[sqlx::test]
+    async fn email_lookup_returns_all_exact_matches_ignoring_case(pool: PgPool) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO verified_identities (discord_user_id, email)
+            VALUES (2, 'Member@RIT.EDU'), (1, 'member@rit.edu'),
+                   (3, 'other.member@rit.edu'), (4, 'member@alumni.rit.edu')
+            "#,
+        )
+        .execute(&pool)
+        .await?;
+
+        let email = EmailAddress::parse("  MEMBER@rit.edu  ")?;
+        assert_eq!(find_user_ids_by_email(&pool, &email).await?, vec![1, 2]);
+        for input in ["missing@rit.edu", "%@rit.edu", "mem_er@rit.edu"] {
+            assert!(
+                find_user_ids_by_email(&pool, &EmailAddress::parse(input)?)
+                    .await?
+                    .is_empty()
+            );
+        }
+        Ok(())
+    }
 
     #[sqlx::test]
     async fn legacy_identity_can_confirm_its_display_name(pool: PgPool) -> Result<()> {

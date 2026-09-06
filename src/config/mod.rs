@@ -73,6 +73,7 @@ pub enum Feature {
     Age,
     Verification,
     Onboarding,
+    Find,
 }
 
 #[derive(Debug, Clone)]
@@ -302,11 +303,16 @@ impl FeatureSet {
     }
 
     pub fn names(&self) -> Vec<&'static str> {
-        [Feature::Age, Feature::Verification, Feature::Onboarding]
-            .into_iter()
-            .filter(|feature| self.contains(*feature))
-            .map(Feature::name)
-            .collect()
+        [
+            Feature::Age,
+            Feature::Verification,
+            Feature::Onboarding,
+            Feature::Find,
+        ]
+        .into_iter()
+        .filter(|feature| self.contains(*feature))
+        .map(Feature::name)
+        .collect()
     }
 }
 
@@ -343,6 +349,7 @@ impl Feature {
             Self::Age => "age",
             Self::Verification => "verification",
             Self::Onboarding => "onboarding",
+            Self::Find => "find",
         }
     }
 }
@@ -355,8 +362,9 @@ impl FromStr for Feature {
             "age" => Ok(Self::Age),
             "verification" => Ok(Self::Verification),
             "onboarding" => Ok(Self::Onboarding),
+            "find" => Ok(Self::Find),
             unknown => Err(anyhow::anyhow!(
-                "unknown BOT_FEATURES entry `{unknown}`; expected age, verification, or onboarding"
+                "unknown BOT_FEATURES entry `{unknown}`; expected age, verification, onboarding, or find"
             )),
         }
     }
@@ -466,11 +474,14 @@ mod tests {
 
     #[test]
     fn parses_enabled_features() {
-        let features = "age, verification, onboarding"
+        let features = "age, verification, onboarding, find"
             .parse::<FeatureSet>()
             .expect("feature set should parse");
 
-        assert_eq!(features.names(), vec!["age", "verification", "onboarding"]);
+        assert_eq!(
+            features.names(),
+            vec!["age", "verification", "onboarding", "find"]
+        );
     }
 
     #[test]
