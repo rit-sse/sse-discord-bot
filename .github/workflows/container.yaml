@@ -1,6 +1,7 @@
 name: Publish container image
 
 on:
+  pull_request:
   push:
     branches:
       - main
@@ -10,11 +11,51 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
-  publish:
+  check:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:18.4-bookworm
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: sse_discord_bot_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d sse_discord_bot_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/sse_discord_bot_test
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+
+      - name: Check formatting
+        run: cargo +stable fmt --all --check
+
+      - name: Run Clippy
+        run: cargo +stable clippy --locked --all-targets -- -D warnings
+
+      - name: Run tests
+        run: cargo +stable test --locked
+
+  publish:
+    needs: check
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
